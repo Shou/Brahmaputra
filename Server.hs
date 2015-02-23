@@ -3,6 +3,7 @@
 
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 
 -- {{{ Imports
@@ -21,8 +22,15 @@ import qualified Data.Map as M
 import           Data.Monoid ((<>), mempty)
 import           Data.Text (Text)
 import qualified Data.Text as T
+import           Data.Time.Clock.POSIX (getPOSIXTime)
 
 import           Network.WebSockets
+
+-- }}}
+
+-- {{{ Constants
+
+debug = True
 
 -- }}}
 
@@ -45,6 +53,13 @@ instance Show Coords where
 
 defPlayer = Player (Coords 0 0) mempty
 
+-- {{{ Utilities
+
+debugLine :: MonadIO m => String -> m ()
+debugLine = liftIO . putStrLn
+
+-- }}}
+
 -- TODO get ThreadID so we can KILL old threads
 app :: TMVar Game -> PendingConnection -> IO ()
 app tv p = do
@@ -56,29 +71,41 @@ app tv p = do
 
     case (m :: Text) of
         "coords" -> coordsThread c
-        "chat" -> void $ return c
+        "chat" -> chatThread c
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
 coordsThread :: Connection -> IO ()
-coordsThread c = do
-    void . flip runStateT defPlayer $ do
-        forever $ do
-            m <- liftIO $ receiveData c
+coordsThread c = void . flip runStateT defPlayer $ forever $ do
+    debugLine "Coordinator thread initiated"
+    m <- liftIO $ receiveData c
 
-            (Coords ox oy) <- coords <$> get
+    (Coords ox oy) <- coords <$> get
 
-            let (tx, ty) = T.drop 1 <$> T.break (== ',') m
-                (mx, my) = (readMay $ T.unpack tx, readMay $ T.unpack ty)
-                (x, y) = (maybe 0 id mx + ox, maybe 0 id my + oy)
+    let (tx, ty) = T.drop 1 <$> T.break (== ',') m
+        (mx, my) = (readMay $ T.unpack tx, readMay $ T.unpack ty)
+        (x, y) = (maybe 0 id mx + ox, maybe 0 id my + oy)
 
-            modify $ \s -> s { coords = Coords x y }
+    modify $ \s -> s { coords = Coords x y }
 
-            liftIO . print $ show x <> " x " <> show y
+    liftIO . print $ show x <> " x " <> show y
 
-            get >>= liftIO . sendTextData c . T.pack . show . coords
+    get >>= liftIO . sendTextData c . T.pack . show . coords
+
+chatThread :: Connection -> IO ()
+chatThread c = void . flip runStateT [] $ forever $ do
+    debugLine "Chat thread initiated"
+    (m :: Text) <- liftIO $ receiveData c
+
+    ts <- liftIO getPOSIXTime
+
+    history <- get
+
+    modify (++ [(ts, m)])
 
 
 main = do
+    debugLine "Brahma server"
     threadsVar <- newTMVarIO $ Game mempty
+    debugLine "Running web server"
     runServer "0.0.0.0" 8080 $ app threadsVar
 
