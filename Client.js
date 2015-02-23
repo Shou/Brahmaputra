@@ -6,8 +6,8 @@ var port = 8080
 var path = "/"
 
 var playerSize = 10
-var fps = 5
-var speed = playerSize / fps
+var maxSpeed = 2
+var speedStep = maxSpeed / 10
 
 // }}}
 
@@ -31,20 +31,21 @@ var player =
     }
 
 // | Player movement websocket
-// ws :: WebSocket
+// mws :: WebSocket
 var mws
 // | Chat websocket
-// ws :: WebSocket
+// cws :: WebSocket
 var cws
+
 // cv :: Canvas
 var cv
 // cx :: CanvasContext
 var cx
 
-// moving :: Bool
-var moving = false
-// frame :: Int
-var frame = 1
+var speedX = 0
+var speedY = 0
+
+var chat
 
 // }}}
 
@@ -58,22 +59,57 @@ function log(x) { console.log(x) }
 
 // }}}
 
-// TODO rAF should be at the beginning of the code
-// FIXME movement too fast; no acceleration limits.
+// chatSend :: String -> IO ()
+function chatSend(m) {
+    cws.send(m)
+
+    // TODO hide on successful post
+    //chat.classList.add("hide")
+}
+
+// showChat :: IO ()
+function showChat() {
+    if (! chat) {
+        chat = document.createElement("input")
+
+        chat.addEventListener("keypress", function(e) {
+            e.stopPropagation()
+
+            if (e.keyCode === 13) chatSend(this.value)
+        })
+
+        document.body.appendChild(chat)
+    }
+
+    chat.classList.remove("hide")
+
+    chat.focus()
+}
+
+// TODO slow down movement when keyboard is empty, towards even pixel number.
 // move :: IO ()
 function move() {
+    var next = requestAnimationFrame(move)
     moving = true
 
+    // FIXME right/down accelerates left/up to insane speeds when used after
     if (keyElem("right"))
-        player.x = Math.min(player.x + speed * frame, speed * frame * 2)
+        speedX = Math.min((speedX ? speedX : speedStep) * 1.2, maxSpeed)
     if (keyElem("left"))
-        player.x = Math.max(player.x - speed * frame, speed * frame * -2)
+        speedX = Math.max( Math.abs((speedX ? speedX : speedStep)) * -1.2
+                         , -maxSpeed
+                         )
     if (keyElem("down"))
-        player.y = Math.min(player.y + speed * frame, speed * frame * 2)
+        speedY = Math.min((speedY ? speedY : speedStep) * 1.2, maxSpeed)
     if (keyElem("up"))
-        player.y = Math.max(player.y - speed * frame, speed * frame * -2)
+        speedY = Math.max( Math.abs((speedY ? speedY : speedStep)) * -1.2
+                         , -maxSpeed
+                         )
 
-    log(player.x + " x " + player.y)
+    player.x += speedX
+    player.y += speedY
+
+    log(player.x + " x " + player.y + ": " + speedX + " * " + speedY)
 
     cx.clearRect(0, 0, cv.width, cv.height)
     cx.fillRect( player.x
@@ -82,14 +118,18 @@ function move() {
                , playerSize
                )
 
-    if (frame % fps == 0 && keyboard.length === 0) {
-        moving = false
-        frame = 1
+    var emptyKeyboard = keyboard.length === 0
+    var evenX = Math.round(player.x) % playerSize === 0
+    var evenY = Math.round(player.y) % playerSize === 0
 
-    } else {
-        frame++
-        requestAnimationFrame(move)
-    }
+    if (emptyKeyboard && evenX && evenY) {
+        speedX = speedY = 0
+        cancelAnimationFrame(next)
+        moving = false
+
+    } else if (emptyKeyboard && evenX) speedX = 0
+
+    else if (emptyKeyboard && evenY) speedY = 0
 }
 
 // keyElem :: String -> Int -> Bool
@@ -125,7 +165,7 @@ function connect(host, port, path, protocol) {
     var ws = new WebSocket("ws://" + host + ':' + port + path)
 
     ws.onopen = function(_) { ws.send(protocol) }
-    ws.onclose = function(_) { delete ws }
+    ws.onclose = function(_) { ws = null } // FIXME, ws is local
 
     return ws
 }
@@ -136,14 +176,15 @@ function setupCanvas(c) {
     c.height = window.innerHeight
     var cx = c.getContext("2d")
 
-    cx.fillStyle = "#000"
+    cx.fillStyle = "#FFF"
 
     return cx
 }
 
 
 function main() {
-    ws = connect(host, port, path, "coords")
+    mws = connect(host, port, path, "coords")
+    cws = connect(host, port, path, "chat")
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)
 
