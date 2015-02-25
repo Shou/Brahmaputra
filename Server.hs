@@ -26,6 +26,8 @@ import           Data.Ord (comparing)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Time.Clock.POSIX (getPOSIXTime)
+import qualified Database.HDBC as DB
+import qualified Database.HDBC.Sqlite3 as DB
 
 import qualified Network.Wreq as Wq
 import           Network.WebSockets
@@ -40,7 +42,9 @@ debug = True
 
 -- {{{ Data
 
-data Game = Game { players :: Map Text Player }
+data Game = Game { players :: Map Text Player
+                 , database :: DB.Connection
+                 }
     deriving (Show)
 
 data Player = Player { coords :: !Coords
@@ -68,6 +72,9 @@ instance FromJSON Classify where
                                     <*> v .: "errorMessage"
                                     <*> v .: "cls1"
     parseJSON _ = mzero
+
+instance Show DB.Connection where
+    show _ = "Database"
 
 -- }}}
 
@@ -159,7 +166,11 @@ chatThread c = void . flip runStateT [] $ forever $ do
 
 main = do
     debugLine "Brahma server v0.1"
-    threadsVar <- newTMVarIO $ Game mempty
+    debugLine "Connecting to SQLite3 database `cache'"
+    db <- DB.connectSqlite3 "cache"
+    debugLine "Initiating table `moods'"
+    DB.run db "CREATE TABLE IF NOT EXISTS moods (mood TEXT, rating REAL)" []
+    gameVar <- newTMVarIO $ Game mempty db
     debugLine "Initiating websocket server"
-    runServer "0.0.0.0" 8080 $ app threadsVar
+    runServer "0.0.0.0" 8080 $ app gameVar
 
