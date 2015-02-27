@@ -1,13 +1,20 @@
 
 // {{{ Constants
 
+// host, path :: String
 var host = "localhost"
-var port = 8080
 var path = "/"
+// port :: Int
+var port = 8080
 
+// playerSize, maxSpeed :: Int
 var playerSize = 10
 var maxSpeed = 2
+// speedStep :: Float
 var speedStep = maxSpeed / 10
+
+// key :: String
+var key
 
 // }}}
 
@@ -57,6 +64,16 @@ function trace(x) { console.log(x); return x }
 // log :: a -> IO ()
 function log(x) { console.log(x) }
 
+// | Generate a random string (a-z0-9) of length n
+// randomString :: Int -> String
+function randomString(n) {
+    var str = ""
+    while (str.length < n)
+        str += Math.random().toString(36).substr(2, n - str.length)
+
+    return str
+}
+
 // }}}
 
 // chatSend :: String -> IO ()
@@ -65,6 +82,7 @@ function chatSend(m) {
 
     // TODO hide on successful post
     //chat.classList.add("hide")
+    chat.value = ""
 }
 
 // showChat :: IO ()
@@ -160,11 +178,11 @@ function keyup(e) {
     console.log(keyboard)
 }
 
-// connect :: String -> Int -> String -> IO WebSocket
-function connect(host, port, path, protocol) {
+// connect :: String -> Int -> String -> String -> IO WebSocket
+function connect(host, port, path, protocol, key) {
     var ws = new WebSocket("ws://" + host + ':' + port + path)
 
-    ws.onopen = function(_) { ws.send(protocol) }
+    ws.onopen = function(_) { ws.send(protocol + " " + key) }
     ws.onclose = function(_) { ws = null } // FIXME, ws is local
 
     return ws
@@ -183,8 +201,10 @@ function setupCanvas(c) {
 
 
 function main() {
-    mws = connect(host, port, path, "coords")
-    cws = connect(host, port, path, "chat")
+    key = randomString(256)
+
+    mws = connect(host, port, path, "coords", key)
+    cws = connect(host, port, path, "chat", key)
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)
 

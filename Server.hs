@@ -38,6 +38,16 @@ import           Network.WebSockets
 
 debug = True
 
+moodsTable = concat [ "CREATE TABLE IF NOT EXISTS moods "
+                    , "( msg TEXT NOT NULL UNIQUE"
+                    , ", mood TEXT NOT NULL"
+                    , ", rate FLOAT NOT NULL"
+                    , ", date DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    , ")"
+                    ]
+moodInsert = "INSERT INTO moods (msg, mood, rate) VALUES (?, ?, ?)"
+moodSelect = "SELECT * FROM moods WHERE msg=?"
+
 -- }}}
 
 -- {{{ Data
@@ -47,7 +57,8 @@ data Game = Game { players :: Map Text Player
                  }
     deriving (Show)
 
-data Player = Player { coords :: !Coords
+data Player = Player { key :: Text
+                     , coords :: !Coords
                      , threads :: Map Text ThreadId
                      }
     deriving (Show)
@@ -82,6 +93,9 @@ defPlayer = Player (Coords 0 0) mempty
 
 -- {{{ Utilities
 
+debugStr :: MonadIO m => String -> m ()
+debugStr = liftIO . putStr
+
 debugLine :: MonadIO m => String -> m ()
 debugLine = liftIO . putStrLn
 
@@ -111,18 +125,18 @@ moodAnalyze text = do
 
 -- TODO get ThreadID so we can KILL old threads
 app :: TMVar Game -> PendingConnection -> IO ()
-app tv p = do
+app t p = do
     putStr "Incoming request from: "
     print . headMay . requestHeaders $ pendingRequest p
     c <- acceptRequest p
     m <- receiveData c
 
-    putStr "→ "
-    print m
+    putStr "→ " >> print m
 
     case (m :: Text) of
         "coords" -> coordsThread c
-        "chat" -> chatThread c
+        "chat" -> chatThread c t
+        "meta" -> metaThread c t
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
 coordsThread :: Connection -> IO ()
@@ -142,35 +156,67 @@ coordsThread c = void . flip runStateT defPlayer $ forever $ do
 
     get >>= liftIO . sendTextData c . T.pack . show . coords
 
-chatThread :: Connection -> IO ()
-chatThread c = void . flip runStateT [] $ forever $ do
+chatThread :: Connection -> DB.Connection -> IO ()
+chatThread c t = forever $ do
     debugLine "Awaiting chat message"
-    (m :: Text) <- liftIO $ receiveData c
+    (m :: Text) <- receiveData c
+
+    (Game _ db) <- atomically $ readTMVar t
 
     ts <- liftIO getPOSIXTime
 
-    debugLine "Analyzing message mood..."
-    moods <- liftIO $ moodAnalyze $ T.unpack m
+    debugStr "Checking local cache database... "
+    dms <- DB.quickQuery' db moodSelect [ DB.toSql m ]
 
-    let sortedMoods = reverse . sortBy (comparing snd) $ M.toList moods
-        fullMsg = (ts, sortedMoods, m)
+    let sortMoods ms = reverse . sortBy (comparing snd) $ M.toList ms
 
-    liftIO $ print fullMsg
+    moods <- if null dms then do
+        debugLine "not found"
+        debugLine "Analyzing message mood"
 
-    debugLine $ "The message is: " <> fst (head sortedMoods)
+        moods <- moodAnalyze $ T.unpack m
 
-    history <- get
+        let mood = fst . head $ sortMoods moods
+            rate = snd . head $ sortMoods moods
 
-    modify (++ [fullMsg])
+        DB.run db moodInsert [ DB.toSql m
+                             , DB.toSql mood
+                             , DB.toSql rate
+                             ]
+        DB.commit db
+
+        return moods
+
+    else do
+        debugLine "data exists"
+        debugLine "Retrieving local cache values"
+
+        let mood = DB.fromSql $ dms !! 0 !! 1
+            rate = DB.fromSql $ dms !! 0 !! 2
+
+        return $ M.fromList [(mood, rate)]
+
+    let fullMsg = (ts, sortMoods moods, m)
+    print fullMsg
+
+    debugLine $ "The message is: " <> fst (head $ sortMoods moods)
+
+metaThread :: Connection -> TMVar Game -> IO ()
+metaThread c t = do
+    debugLine "Awaiting meta request"
+    (m :: Text) <- receiveData c
+
+    print m
 
 
+-- TODO move table creation text to constant
 main = do
     debugLine "Brahma server v0.1"
     debugLine "Connecting to SQLite3 database `cache'"
     db <- DB.connectSqlite3 "cache"
     debugLine "Initiating table `moods'"
-    DB.run db "CREATE TABLE IF NOT EXISTS moods (mood TEXT, rating REAL)" []
-    gameVar <- newTMVarIO $ Game mempty db
+    DB.run db moodsTable []
+    gameTM <- newTMVarIO $ Game mempty db
     debugLine "Initiating websocket server"
-    runServer "0.0.0.0" 8080 $ app gameVar
+    runServer "0.0.0.0" 8080 $ app gameTM
 
