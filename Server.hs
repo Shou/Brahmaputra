@@ -10,6 +10,7 @@
 
 import           Control.Applicative ((<$>), (<*>))
 import           Control.Concurrent (ThreadId, myThreadId, forkIO)
+import           Control.Concurrent.MVar
 import           Control.Concurrent.STM (atomically)
 import           Control.Concurrent.STM.TMVar
 import           Control.Error (readMay, headMay)
@@ -59,7 +60,8 @@ data Game = Game { players :: Map Text Player
 
 data Player = Player { key :: Text
                      , coords :: !Coords
-                     , threads :: Map Text ThreadId
+                     , wsockets :: Map Text (Connection, ThreadId)
+                     , moodvar :: MVar Text
                      }
     deriving (Show)
 
@@ -84,12 +86,28 @@ instance FromJSON Classify where
                                     <*> v .: "cls1"
     parseJSON _ = mzero
 
+instance Show Connection where
+    show _ = "Websocket"
+
 instance Show DB.Connection where
     show _ = "Database"
 
 -- }}}
 
-defPlayer = Player (Coords 0 0) mempty
+-- {{{ Data utils
+
+defPlayer = Player mempty (Coords 0 0) mempty mempty
+
+modGamePlayer :: (Player -> Player) -> Text -> Game -> Game
+modGamePlayer f user g =
+    g { players = M.adjust f user (players g) }
+
+stateGame :: TMVar Game -> (Game -> Game) -> IO ()
+stateGame tg f = atomically $ do
+    g <- takeTMVar tg
+    putTMVar tg $ f g
+
+-- }}}
 
 -- {{{ Utilities
 
@@ -123,24 +141,35 @@ moodAnalyze text = do
 
 -- }}}
 
+playerMVar :: TMVar Game -> Text -> IO MVar
+playerMVar t key = do
+    g <- atomically $ readTMVar t
+    let mp = M.lookup text $ players g
+    mv <- maybe newMVar (return . moodvar) mp
+    modGamePlayer (\p -> p { moodvar = mv }) key
+
 -- TODO get ThreadID so we can KILL old threads
 app :: TMVar Game -> PendingConnection -> IO ()
 app t p = do
     putStr "Incoming request from: "
-    print . headMay . requestHeaders $ pendingRequest p
+    print . head . requestHeaders $ pendingRequest p
     c <- acceptRequest p
-    m <- receiveData c
+    (m :: Text) <- receiveData c
+
+    let (protocol : key : _) = T.words m
+
+    mv <- playerMVar t key
 
     putStr "→ " >> print m
 
-    case (m :: Text) of
-        "coords" -> coordsThread c
-        "chat" -> chatThread c t
-        "meta" -> metaThread c t
+    case protocol of
+        "move" -> moveThread c k
+        "chat" -> chatThread c k t
+        "mood" -> moodThread c k t
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
-coordsThread :: Connection -> IO ()
-coordsThread c = void . flip runStateT defPlayer $ forever $ do
+moveThread :: Connection -> IO ()
+moveThread c = void . flip runStateT defPlayer $ forever $ do
     debugLine "Awaiting coordinates"
     m <- liftIO $ receiveData c
 
@@ -156,8 +185,8 @@ coordsThread c = void . flip runStateT defPlayer $ forever $ do
 
     get >>= liftIO . sendTextData c . T.pack . show . coords
 
-chatThread :: Connection -> DB.Connection -> IO ()
-chatThread c t = forever $ do
+chatThread :: Connection -> TMVar Game -> MVar Text -> IO ()
+chatThread c t mv = forever $ do
     debugLine "Awaiting chat message"
     (m :: Text) <- receiveData c
 
@@ -168,7 +197,8 @@ chatThread c t = forever $ do
     debugStr "Checking local cache database... "
     dms <- DB.quickQuery' db moodSelect [ DB.toSql m ]
 
-    let sortMoods ms = reverse . sortBy (comparing snd) $ M.toList ms
+    let snd' (x, !y) = y
+        sortMoods ms = reverse . sortBy (comparing snd') $ M.toList ms
 
     moods <- if null dms then do
         debugLine "not found"
@@ -196,27 +226,38 @@ chatThread c t = forever $ do
 
         return $ M.fromList [(mood, rate)]
 
-    let fullMsg = (ts, sortMoods moods, m)
+    let !sortedMoods = sortMoods moods
+        fullMsg = (ts, sortedMoods, m)
+
+    putStrLn "Putting mv"
+    putMVar mv . T.pack . fst $ head sortedMoods
     print fullMsg
 
-    debugLine $ "The message is: " <> fst (head $ sortMoods moods)
+    debugLine $ "The message is: " <> fst (head sortedMoods)
 
-metaThread :: Connection -> TMVar Game -> IO ()
-metaThread c t = do
-    debugLine "Awaiting meta request"
-    (m :: Text) <- receiveData c
+moodThread :: Connection -> a -> MVar Text -> IO ()
+moodThread c _ mv = forever $ do
+    debugLine "Meta thread awaiting mood"
+    mood <- takeMVar mv
 
-    print m
+    sendTextData c mood
+
+    putStr "→ " >> print mood
 
 
--- TODO move table creation text to constant
 main = do
     debugLine "Brahma server v0.1"
     debugLine "Connecting to SQLite3 database `cache'"
+
     db <- DB.connectSqlite3 "cache"
+
     debugLine "Initiating table `moods'"
+
     DB.run db moodsTable []
+
     gameTM <- newTMVarIO $ Game mempty db
+
     debugLine "Initiating websocket server"
+
     runServer "0.0.0.0" 8080 $ app gameTM
 

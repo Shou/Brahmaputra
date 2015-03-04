@@ -37,12 +37,15 @@ var player =
     , y: 0
     }
 
-// | Player movement websocket
-// mws :: WebSocket
-var mws
+// | Player coordinate websocket
+// cows :: WebSocket
+var cows
 // | Chat websocket
-// cws :: WebSocket
-var cws
+// chws :: WebSocket
+var chws
+// | Mood websocket
+// mows :: WebSocket
+var mows
 
 // cv :: Canvas
 var cv
@@ -78,7 +81,7 @@ function randomString(n) {
 
 // chatSend :: String -> IO ()
 function chatSend(m) {
-    cws.send(m)
+    chws.send(m)
 
     // TODO hide on successful post
     //chat.classList.add("hide")
@@ -183,7 +186,8 @@ function connect(host, port, path, protocol, key) {
     var ws = new WebSocket("ws://" + host + ':' + port + path)
 
     ws.onopen = function(_) { ws.send(protocol + " " + key) }
-    ws.onclose = function(_) { ws = null } // FIXME, ws is local
+    ws.onclose = function(_) { ws.close() }
+    ws.onmessage = function(m) { console.log(m.data) }
 
     return ws
 }
@@ -203,8 +207,9 @@ function setupCanvas(c) {
 function main() {
     key = randomString(256)
 
-    mws = connect(host, port, path, "coords", key)
-    cws = connect(host, port, path, "chat", key)
+    mvws = connect(host, port, path, "move", key)
+    chws = connect(host, port, path, "chat", key)
+    mows = connect(host, port, path, "mood", key)
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)
 
