@@ -22,6 +22,7 @@ import           Data.Aeson
 import           Data.List (sortBy)
 import           Data.Map (Map)
 import qualified Data.Map as M
+import           Data.Maybe (isNothing)
 import           Data.Monoid ((<>), mempty)
 import           Data.Ord (comparing)
 import           Data.Text (Text)
@@ -92,15 +93,21 @@ instance Show Connection where
 instance Show DB.Connection where
     show _ = "Database"
 
+instance Show (MVar a) where
+    show _ = "MVar"
+
 -- }}}
 
 -- {{{ Data utils
 
-defPlayer = Player mempty (Coords 0 0) mempty mempty
+defPlayer = Player mempty (Coords 0 0) mempty
 
 modGamePlayer :: (Player -> Player) -> Text -> Game -> Game
 modGamePlayer f user g =
     g { players = M.adjust f user (players g) }
+
+insGamePlayer :: Text -> Player -> Game -> Game
+insGamePlayer k p g = g { players = M.insert k p (players g) }
 
 stateGame :: TMVar Game -> (Game -> Game) -> IO ()
 stateGame tg f = atomically $ do
@@ -141,12 +148,14 @@ moodAnalyze text = do
 
 -- }}}
 
-playerMVar :: TMVar Game -> Text -> IO MVar
-playerMVar t key = do
+playerMoodvar :: TMVar Game -> Text -> IO (MVar Text)
+playerMoodvar t key = do
     g <- atomically $ readTMVar t
-    let mp = M.lookup text $ players g
-    mv <- maybe newMVar (return . moodvar) mp
-    modGamePlayer (\p -> p { moodvar = mv }) key
+    let mp = M.lookup key $ players g
+    mv <- maybe newEmptyMVar (return . moodvar) mp
+    when (isNothing mp) $ do
+        stateGame t $ insGamePlayer key $ defPlayer mv
+    return mv
 
 -- TODO get ThreadID so we can KILL old threads
 app :: TMVar Game -> PendingConnection -> IO ()
@@ -158,18 +167,20 @@ app t p = do
 
     let (protocol : key : _) = T.words m
 
-    mv <- playerMVar t key
+    -- Initiate mood MVar
+    void $ playerMoodvar t key
 
     putStr "→ " >> print m
 
     case protocol of
-        "move" -> moveThread c k
-        "chat" -> chatThread c k t
-        "mood" -> moodThread c k t
+        "move" -> moveThread c t key
+        "chat" -> chatThread c t key
+        "mood" -> moodThread c t key
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
-moveThread :: Connection -> IO ()
-moveThread c = void . flip runStateT defPlayer $ forever $ do
+-- FIXME undefined used
+moveThread :: Connection -> TMVar Game -> Text -> IO ()
+moveThread c t k = void . flip runStateT (defPlayer undefined) $ forever $ do
     debugLine "Awaiting coordinates"
     m <- liftIO $ receiveData c
 
@@ -185,8 +196,8 @@ moveThread c = void . flip runStateT defPlayer $ forever $ do
 
     get >>= liftIO . sendTextData c . T.pack . show . coords
 
-chatThread :: Connection -> TMVar Game -> MVar Text -> IO ()
-chatThread c t mv = forever $ do
+chatThread :: Connection -> TMVar Game -> Text -> IO ()
+chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Awaiting chat message"
     (m :: Text) <- receiveData c
 
@@ -235,8 +246,8 @@ chatThread c t mv = forever $ do
 
     debugLine $ "The message is: " <> fst (head sortedMoods)
 
-moodThread :: Connection -> a -> MVar Text -> IO ()
-moodThread c _ mv = forever $ do
+moodThread :: Connection -> TMVar Game -> Text -> IO ()
+moodThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Meta thread awaiting mood"
     mood <- takeMVar mv
 

@@ -37,6 +37,11 @@ var player =
     , y: 0
     }
 
+var stepX = 0
+var stepY = 0
+
+var playerColor = "white"
+
 // | Player coordinate websocket
 // cows :: WebSocket
 var cows
@@ -107,6 +112,22 @@ function showChat() {
     chat.focus()
 }
 
+function chatter(m) {
+    logger(m)
+}
+
+function logger(m) {
+    console.log(m.data)
+}
+
+function mooder(m) {
+    if (m.data === "upset") playerColor = "lightPink"
+    else if (m.data === "happy") playerColor = "lightGreen"
+    else playerColor = "white"
+
+    draw(player.x, player.y, playerColor)
+}
+
 // TODO slow down movement when keyboard is empty, towards even pixel number.
 // move :: IO ()
 function move() {
@@ -114,30 +135,44 @@ function move() {
     moving = true
 
     // FIXME right/down accelerates left/up to insane speeds when used after
-    if (keyElem("right"))
-        speedX = Math.min((speedX ? speedX : speedStep) * 1.2, maxSpeed)
-    if (keyElem("left"))
-        speedX = Math.max( Math.abs((speedX ? speedX : speedStep)) * -1.2
-                         , -maxSpeed
-                         )
-    if (keyElem("down"))
-        speedY = Math.min((speedY ? speedY : speedStep) * 1.2, maxSpeed)
-    if (keyElem("up"))
-        speedY = Math.max( Math.abs((speedY ? speedY : speedStep)) * -1.2
-                         , -maxSpeed
-                         )
+    if (keyElem("right")) {
+        stepX = Math.min(++stepX, 10)
+        speedX = Math.sin(Math.PI / 2 / playerSize * stepX) * maxSpeed
+
+    } else if (keyElem("left")) {
+        stepX = Math.min(++stepX, 10)
+        speedX = -Math.sin(Math.PI / 2 / playerSize * stepX) * maxSpeed
+
+    } else {
+        stepX = player.x % playerSize
+        speedX = Math.cos(Math.PI / 2 / playerSize * stepX) * maxSpeed
+    }
+
+    if (keyElem("down")) {
+        stepY = Math.min(++stepY, 10)
+        speedY = Math.sin(Math.PI / 2 / playerSize * stepY) * maxSpeed
+
+    } else if (keyElem("up")) {
+        stepY = Math.min(++stepY, 10)
+        speedY = -Math.sin(Math.PI / 2 / playerSize * stepY) * maxSpeed
+
+    } else {
+        stepY = player.y % playerSize
+        speedY = Math.cos(Math.PI / 2 / playerSize * stepY) * maxSpeed
+    }
 
     player.x += speedX
     player.y += speedY
 
+    // Don't go outside the canvas
+    if (player.x < 0) player.x = 0
+    else if (player.x > cv.width) player.x = cv.width
+    if (player.y < 0) player.y = 0
+    else if (player.y > cv.height) player.y = cv.height
+
     log(player.x + " x " + player.y + ": " + speedX + " * " + speedY)
 
-    cx.clearRect(0, 0, cv.width, cv.height)
-    cx.fillRect( player.x
-               , player.y
-               , playerSize
-               , playerSize
-               )
+    draw(player.x, player.y, playerColor)
 
     var emptyKeyboard = keyboard.length === 0
     var evenX = Math.round(player.x) % playerSize === 0
@@ -148,9 +183,21 @@ function move() {
         cancelAnimationFrame(next)
         moving = false
 
-    } else if (emptyKeyboard && evenX) speedX = 0
+    }
 
-    else if (emptyKeyboard && evenY) speedY = 0
+    if (emptyKeyboard && evenX) speedX = 0
+    if (emptyKeyboard && evenY) speedY = 0
+}
+
+// draw :: Int -> Int -> IO ()
+function draw(x, y, pc) {
+    cx.clearRect(0, 0, cv.width, cv.height)
+    cx.fillStyle = pc
+    cx.fillRect( x
+               , y
+               , playerSize
+               , playerSize
+               )
 }
 
 // keyElem :: String -> Int -> Bool
@@ -182,12 +229,12 @@ function keyup(e) {
 }
 
 // connect :: String -> Int -> String -> String -> IO WebSocket
-function connect(host, port, path, protocol, key) {
+function connect(host, port, path, protocol, key, f) {
     var ws = new WebSocket("ws://" + host + ':' + port + path)
 
     ws.onopen = function(_) { ws.send(protocol + " " + key) }
     ws.onclose = function(_) { ws.close() }
-    ws.onmessage = function(m) { console.log(m.data) }
+    ws.onmessage = f
 
     return ws
 }
@@ -198,7 +245,7 @@ function setupCanvas(c) {
     c.height = window.innerHeight
     var cx = c.getContext("2d")
 
-    cx.fillStyle = "#FFF"
+    cx.fillStyle = playerColor
 
     return cx
 }
@@ -207,9 +254,9 @@ function setupCanvas(c) {
 function main() {
     key = randomString(256)
 
-    mvws = connect(host, port, path, "move", key)
-    chws = connect(host, port, path, "chat", key)
-    mows = connect(host, port, path, "mood", key)
+    mvws = connect(host, port, path, "move", key, logger)
+    chws = connect(host, port, path, "chat", key, chatter)
+    mows = connect(host, port, path, "mood", key, mooder)
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)
 
