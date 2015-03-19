@@ -7,7 +7,7 @@
 -- {{{ Imports
 
 import           Control.Applicative ((<$>), (<*>))
-import           Control.Concurrent (ThreadId, myThreadId, forkIO)
+import           Control.Concurrent (ThreadId, myThreadId, forkIO, killThread)
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM (atomically)
 import           Control.Concurrent.STM.TMVar
@@ -151,11 +151,25 @@ moodAnalyze text = do
 -- }}}
 
 -- | Game player websockets in two nested `Map's
-playerChatSocks :: TMVar Game -> IO $ Map Text $ Map Int (Connection, ThreadId)
+playerChatSocks :: TMVar Game -> IO $ Map Text $ Map Text (Connection, ThreadId)
 playerChatSocks tg = M.fromList
                    . map (over _2 wsockets)
                    . M.toList
                    . players <$> atomically (readTMVar tg)
+
+addSocket :: TMVar Game -> Text -> Text -> Connection -> ThreadId -> IO ()
+addSocket tg key pcol con tid = do
+    io <- atomically $ do
+        g <- takeTMVar tg
+        let mp = M.lookup key $ players g
+            mws = join $ M.lookup pcol . wsockets <$> mp
+            g' = g
+        putTMVar tg g'
+        return . flip fmap mws $ \(oldcon, oldtid) -> do
+            killThread oldtid
+            sendClose oldcon ("" :: Text)
+
+    maybe (return ()) id io
 
 playerMoodvar :: TMVar Game -> Text -> IO $ MVar Text
 playerMoodvar t key = do
@@ -176,15 +190,18 @@ app t p = do
 
     let (protocol : key : _) = T.words m
 
+    tid <- myThreadId
+
     -- Initiate mood MVar
     void $ playerMoodvar t key
 
     putStr "→ " >> print m
 
+    -- TODO use a Map of functions instead. We can addSocket once.
     case protocol of
-        "move" -> moveThread c t key
-        "chat" -> chatThread c t key
-        "mood" -> moodThread c t key
+        "move" -> addSocket t key protocol c tid >> moveThread c t key
+        "chat" -> addSocket t key protocol c tid >> chatThread c t key
+        "mood" -> addSocket t key protocol c tid >> moodThread c t key
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
 -- FIXME undefined used
