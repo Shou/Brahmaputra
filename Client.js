@@ -166,9 +166,9 @@ function move() {
 
     // Don't go outside the canvas
     if (player.x < 0) player.x = 0
-    else if (player.x > cv.width) player.x = cv.width
+    else if (player.x >= cv.width - 10) player.x = cv.width - 10
     if (player.y < 0) player.y = 0
-    else if (player.y > cv.height) player.y = cv.height
+    else if (player.y >= cv.height - 10) player.y = cv.height - 10
 
     log(player.x + " x " + player.y + ": " + speedX + " * " + speedY)
 
@@ -239,6 +239,16 @@ function connect(host, port, path, protocol, key, f) {
     return ws
 }
 
+// disconnectAll :: IO ()
+function disconnectAll() {
+    var ss = [mvws, chws, mows]
+
+    for (var i = 0, len = ss.length; i < len; i++) {
+        ss[i].onclose = function() {}
+        ss[i].close()
+    }
+}
+
 // setupCanvas :: Canvas -> IO Context
 function setupCanvas(c) {
     c.width = window.innerWidth
@@ -257,6 +267,9 @@ function main() {
     mvws = connect(host, port, path, "move", key, logger)
     chws = connect(host, port, path, "chat", key, chatter)
     mows = connect(host, port, path, "mood", key, mooder)
+
+    window.onbeforeunload = disconnectAll()
+
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)
 
