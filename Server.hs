@@ -1,10 +1,8 @@
 
 -- Author: Benedict Aas
 
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
+{-# LANGUAGE OverloadedStrings, BangPatterns, ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- {{{ Imports
 
@@ -54,6 +52,9 @@ moodSelect = "SELECT * FROM moods WHERE msg=?"
 
 -- {{{ Data
 
+type f $ a = f a
+infixr 0 $
+
 data Game = Game { players :: Map Text Player
                  , database :: DB.Connection
                  }
@@ -88,18 +89,19 @@ instance FromJSON Classify where
     parseJSON _ = mzero
 
 instance Show Connection where
-    show _ = "Websocket"
+    show _ = "Websocket _"
 
 instance Show DB.Connection where
-    show _ = "Database"
+    show _ = "Database _"
 
 instance Show (MVar a) where
-    show _ = "MVar"
+    show _ = "MVar _"
 
 -- }}}
 
 -- {{{ Data utils
 
+defPlayer :: MVar Text -> Player
 defPlayer = Player mempty (Coords 0 0) mempty
 
 modGamePlayer :: (Player -> Player) -> Text -> Game -> Game
@@ -136,7 +138,7 @@ apiURL user classifier key text = concat
     ]
 
 -- TODO remove key
-moodAnalyze :: String -> IO (Map String Double)
+moodAnalyze :: String -> IO $ Map String Double
 moodAnalyze text = do
     r <- Wq.get $ apiURL "prfekt" "mood" "loGIvZJZHJfc9aOx6RvLHsHeH0" text
 
@@ -148,7 +150,14 @@ moodAnalyze text = do
 
 -- }}}
 
-playerMoodvar :: TMVar Game -> Text -> IO (MVar Text)
+-- | Game player websockets in two nested `Map's
+playerChatSocks :: TMVar Game -> IO $ Map Text $ Map Int (Connection, ThreadId)
+playerChatSocks tg = M.fromList
+                   . map (over _2 wsockets)
+                   . M.toList
+                   . players <$> atomically (readTMVar tg)
+
+playerMoodvar :: TMVar Game -> Text -> IO $ MVar Text
 playerMoodvar t key = do
     g <- atomically $ readTMVar t
     let mp = M.lookup key $ players g
