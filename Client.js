@@ -206,9 +206,10 @@ function keyElem(k, e) {
         if (keyConfig[k].indexOf(keyboard[i]) !== -1) return true
 }
 
+// XXX do we ever use < 32?
 // keydown :: Event -> IO ()
 function keydown(e) {
-    if (keyboard.indexOf(e.keyCode) === -1)
+    if (keyboard.indexOf(e.keyCode) === -1 && e.keyCode >= 32)
         keyboard.push(e.keyCode)
 
     if (e.keyCode === 13) showChat()
@@ -247,6 +248,10 @@ function disconnectAll() {
         ss[i].onclose = function() {}
         ss[i].close()
     }
+
+    mvws = undefined
+    chws = undefined
+    mows = undefined
 }
 
 // setupCanvas :: Canvas -> IO Context
@@ -268,7 +273,7 @@ function main() {
     chws = connect(host, port, path, "chat", key, chatter)
     mows = connect(host, port, path, "mood", key, mooder)
 
-    window.onbeforeunload = disconnectAll()
+    window.onbeforeunload = disconnectAll
 
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)

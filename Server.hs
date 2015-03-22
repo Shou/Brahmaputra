@@ -2,7 +2,7 @@
 -- Author: Benedict Aas
 
 {-# LANGUAGE OverloadedStrings, BangPatterns, ScopedTypeVariables #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeOperators, LiberalTypeSynonyms #-}
 
 -- {{{ Imports
 
@@ -20,7 +20,7 @@ import           Data.Aeson
 import           Data.List (sortBy)
 import           Data.Map (Map)
 import qualified Data.Map as M
-import           Data.Maybe (isNothing)
+import           Data.Maybe (isNothing, fromJust)
 import           Data.Monoid ((<>), mempty)
 import           Data.Ord (comparing)
 import           Data.Text (Text)
@@ -28,6 +28,7 @@ import qualified Data.Text as T
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Database.HDBC as DB
 import qualified Database.HDBC.Sqlite3 as DB
+import           Debug.Trace (trace)
 
 import qualified Network.Wreq as Wq
 import           Network.WebSockets
@@ -52,8 +53,17 @@ moodSelect = "SELECT * FROM moods WHERE msg=?"
 
 -- {{{ Data
 
+-- 
 type f $ a = f a
-infixr 0 $
+infixr 2 $
+
+-- | Weak fixity: it only binds these two arguments together, so it works as a
+--   functional alternative to wrapping them in parentheses.
+type (~>) = (->)
+infixl 5 ~>
+
+type (%>) = (->)
+infixl 1 %>
 
 data Game = Game { players :: Map Text Player
                  , database :: DB.Connection
@@ -126,6 +136,9 @@ debugStr = liftIO . putStr
 debugLine :: MonadIO m => String -> m ()
 debugLine = liftIO . putStrLn
 
+traceMod :: Show b => (a -> b) -> a -> a
+traceMod f a = trace (show $ f a) a
+
 -- }}}
 
 -- {{{ API
@@ -151,26 +164,43 @@ moodAnalyze text = do
 -- }}}
 
 -- | Game player websockets in two nested `Map's
-playerChatSocks :: TMVar Game -> IO $ Map Text $ Map Text (Connection, ThreadId)
-playerChatSocks tg = M.fromList
-                   . map (over _2 wsockets)
-                   . M.toList
-                   . players <$> atomically (readTMVar tg)
+playerSocks :: TMVar Game -> IO $ Map Text $ Map Text (Connection, ThreadId)
+playerSocks tg = M.map wsockets . players <$> atomically (readTMVar tg)
 
+-- TODO generalize for protocol??
+-- | Relay message to other hosts.
+relayMessage :: TMVar Game -> Text -> IO ()
+relayMessage tg m = traceMod length . M.toList <$> playerSocks tg >>= unwrap (getSock send)
+  where
+    unwrap :: b ~> IO () -> [(a, b)] -> IO ()
+    unwrap f m = mapM_ (f . snd) m
+    getSock :: a ~> IO () -> Map Text (a, b) -> IO ()
+    getSock f = maybe (putStrLn "no chat") (f . fst) . M.lookup "chat"
+    send :: Connection -> IO ()
+    send = flip sendTextData m
+
+-- | Add player websocket and thread to Game state.
 addSocket :: TMVar Game -> Text -> Text -> Connection -> ThreadId -> IO ()
 addSocket tg key pcol con tid = do
     io <- atomically $ do
         g <- takeTMVar tg
+
         let mp = M.lookup key $ players g
             mws = join $ M.lookup pcol . wsockets <$> mp
-            g' = g
+            -- TODO impure blasphemous exploding code
+            p = fromJust mp
+            p' = p { wsockets = M.insert pcol (con, tid) $ wsockets p }
+            g' = g { players = M.insert key p' $ players g }
+
         putTMVar tg g'
+
         return . flip fmap mws $ \(oldcon, oldtid) -> do
             killThread oldtid
             sendClose oldcon ("" :: Text)
 
     maybe (return ()) id io
 
+-- | Get player's mood MVar
 playerMoodvar :: TMVar Game -> Text -> IO $ MVar Text
 playerMoodvar t key = do
     g <- atomically $ readTMVar t
@@ -180,7 +210,7 @@ playerMoodvar t key = do
         stateGame t $ insGamePlayer key $ defPlayer mv
     return mv
 
--- TODO get ThreadID so we can KILL old threads
+-- | Websocket initial thread function
 app :: TMVar Game -> PendingConnection -> IO ()
 app t p = do
     putStr "Incoming request from: "
@@ -205,6 +235,7 @@ app t p = do
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
 -- FIXME undefined used
+-- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
 moveThread c t k = void . flip runStateT (defPlayer undefined) $ forever $ do
     debugLine "Awaiting coordinates"
@@ -222,6 +253,7 @@ moveThread c t k = void . flip runStateT (defPlayer undefined) $ forever $ do
 
     get >>= liftIO . sendTextData c . T.pack . show . coords
 
+-- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
 chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Awaiting chat message"
@@ -238,30 +270,30 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
         sortMoods ms = reverse . sortBy (comparing snd') $ M.toList ms
 
     moods <- if null dms then do
-        debugLine "not found"
-        debugLine "Analyzing message mood"
+            debugLine "not found"
+            debugLine "Analyzing message mood"
 
-        moods <- moodAnalyze $ T.unpack m
+            moods <- moodAnalyze $ T.unpack m
 
-        let mood = fst . head $ sortMoods moods
-            rate = snd . head $ sortMoods moods
+            let mood = fst . head $ sortMoods moods
+                rate = snd . head $ sortMoods moods
 
-        DB.run db moodInsert [ DB.toSql m
-                             , DB.toSql mood
-                             , DB.toSql rate
-                             ]
-        DB.commit db
+            DB.run db moodInsert [ DB.toSql m
+                                 , DB.toSql mood
+                                 , DB.toSql rate
+                                 ]
+            DB.commit db
 
-        return moods
+            return moods
 
-    else do
-        debugLine "data exists"
-        debugLine "Retrieving local cache values"
+        else do
+            debugLine "data exists"
+            debugLine "Retrieving local cache values"
 
-        let mood = DB.fromSql $ dms !! 0 !! 1
-            rate = DB.fromSql $ dms !! 0 !! 2
+            let mood = DB.fromSql $ dms !! 0 !! 1
+                rate = DB.fromSql $ dms !! 0 !! 2
 
-        return $ M.fromList [(mood, rate)]
+            return $ M.fromList [(mood, rate)]
 
     let !sortedMoods = sortMoods moods
         fullMsg = (ts, sortedMoods, m)
@@ -272,6 +304,10 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
 
     debugLine $ "The message is: " <> fst (head sortedMoods)
 
+    debugLine $ "Relaying message"
+    relayMessage t m
+
+-- | Thread and websocket for the user mood metadata.
 moodThread :: Connection -> TMVar Game -> Text -> IO ()
 moodThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Meta thread awaiting mood"
@@ -296,5 +332,19 @@ main = do
 
     debugLine "Initiating websocket server"
 
+    keyboardInput gameTM
+
     runServer "0.0.0.0" 8080 $ app gameTM
+
+  where
+    keyboardInput tg = forkIO $ forever $ do
+        l <- getLine
+
+        g <- atomically $ readTMVar tg
+
+        case l of
+            "game" -> print g
+            "players" -> print $ players g
+            "socks" -> M.mapKeys (T.take 10) <$> playerSocks tg >>= print
+            _ -> putStrLn "Commands: game"
 
