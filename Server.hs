@@ -1,8 +1,10 @@
 
--- Author: Benedict Aas
+-- Copyright 2015 Benedict Aas
+-- Licensed under MIT
 
 {-# LANGUAGE OverloadedStrings, BangPatterns, ScopedTypeVariables #-}
-{-# LANGUAGE TypeOperators, LiberalTypeSynonyms #-}
+{-# LANGUAGE TypeOperators, LiberalTypeSynonyms, GADTs, TypeFamilies #-}
+{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses #-}
 
 -- {{{ Imports
 
@@ -33,6 +35,8 @@ import           Debug.Trace (trace)
 import qualified Network.Wreq as Wq
 import           Network.WebSockets
 
+import System.Exit (exitSuccess)
+
 -- }}}
 
 -- {{{ Constants
@@ -53,17 +57,18 @@ moodSelect = "SELECT * FROM moods WHERE msg=?"
 
 -- {{{ Data
 
--- 
+-- | `$` at the type level.
 type f $ a = f a
 infixr 2 $
 
--- | Weak fixity: it only binds these two arguments together, so it works as a
---   functional alternative to wrapping them in parentheses.
+-- | Parentheses wrapping closest pair.
 type (~>) = (->)
 infixl 5 ~>
 
-type (%>) = (->)
-infixl 1 %>
+-- | Left-associative function type.
+type (&>) = (->)
+infixl 1 &>
+
 
 data Game = Game { players :: Map Text Player
                  , database :: DB.Connection
@@ -71,16 +76,23 @@ data Game = Game { players :: Map Text Player
     deriving (Show)
 
 data Player = Player { key :: Text
-                     , coords :: !Coords
+                     , coords :: Coords Int Int
                      , wsockets :: Map Text (Connection, ThreadId)
                      , moodvar :: MVar Text
                      }
     deriving (Show)
 
-data Coords = Coords { x :: !Int, y :: !Int }
+data Coords a b where
+    Coords :: (Num a ~ Num b) => !a -> !b -> Coords a b
 
-instance Show Coords where
-    show (Coords x y) = show x ++ "," ++ show y
+instance (Show a, Show b) => Show (Coords a b) where
+    show (Coords x y) = show x ++ " " ++ show y
+
+instance (Num a ~ Num a') => Field1 (Coords a b) (Coords a' b) a a' where
+    _1 k (Coords x y) = (\x' -> Coords x' y) <$> k x
+
+instance (Num b ~ Num b') => Field2 (Coords a b) (Coords a b') b b' where
+    _2 k (Coords x y) = (\y' -> Coords x y') <$> k y
 
 data Classify =
     Classify { version :: String
@@ -114,17 +126,26 @@ instance Show (MVar a) where
 defPlayer :: MVar Text -> Player
 defPlayer = Player mempty (Coords 0 0) mempty
 
-modGamePlayer :: (Player -> Player) -> Text -> Game -> Game
+modGamePlayer :: Player ~> Player -> Text -> Game -> Game
 modGamePlayer f user g =
     g { players = M.adjust f user (players g) }
 
 insGamePlayer :: Text -> Player -> Game -> Game
 insGamePlayer k p g = g { players = M.insert k p (players g) }
 
-stateGame :: TMVar Game -> (Game -> Game) -> IO ()
-stateGame tg f = atomically $ do
+getGamePlayer :: Text -> Game -> Maybe Player
+getGamePlayer k g = M.lookup k $ players g
+
+modGame :: TMVar Game -> Game ~> Game -> IO ()
+modGame tg f = atomically $ do
     g <- takeTMVar tg
     putTMVar tg $ f g
+
+getGame :: TMVar Game -> IO Game
+getGame tg = atomically $ readTMVar tg
+
+coordsTuple :: Coords a b -> (a, b)
+coordsTuple (Coords x y) = (x, y)
 
 -- }}}
 
@@ -164,18 +185,19 @@ moodAnalyze text = do
 -- }}}
 
 -- | Game player websockets in two nested `Map's
-playerSocks :: TMVar Game -> IO $ Map Text $ Map Text (Connection, ThreadId)
-playerSocks tg = M.map wsockets . players <$> atomically (readTMVar tg)
+playerSocks :: (Functor m, MonadIO m) =>
+               TMVar Game -> m $ Map Text $ Map Text (Connection, ThreadId)
+playerSocks tg = M.map wsockets . players <$> liftIO (atomically $ readTMVar tg)
 
 -- TODO generalize for protocol??
 -- | Relay message to other hosts.
-relayMessage :: TMVar Game -> Text -> IO ()
-relayMessage tg m = traceMod length . M.toList <$> playerSocks tg >>= unwrap (getSock send)
+relayMessage :: (Functor m, MonadIO m) => TMVar Game -> Text -> Text -> m ()
+relayMessage tg p m = M.toList <$> playerSocks tg >>= liftIO . unwrap (getSock send)
   where
     unwrap :: b ~> IO () -> [(a, b)] -> IO ()
     unwrap f m = mapM_ (f . snd) m
     getSock :: a ~> IO () -> Map Text (a, b) -> IO ()
-    getSock f = maybe (putStrLn "no chat") (f . fst) . M.lookup "chat"
+    getSock f = maybe (putStrLn "no") (f . fst) . M.lookup p
     send :: Connection -> IO ()
     send = flip sendTextData m
 
@@ -207,7 +229,7 @@ playerMoodvar t key = do
     let mp = M.lookup key $ players g
     mv <- maybe newEmptyMVar (return . moodvar) mp
     when (isNothing mp) $ do
-        stateGame t $ insGamePlayer key $ defPlayer mv
+        modGame t $ insGamePlayer key $ defPlayer mv
     return mv
 
 -- | Websocket initial thread function
@@ -218,7 +240,7 @@ app t p = do
     c <- acceptRequest p
     (m :: Text) <- receiveData c
 
-    let (protocol : key : _) = T.words m
+    let (pcol : key : _) = map (T.take 10) $ T.words m
 
     tid <- myThreadId
 
@@ -228,30 +250,28 @@ app t p = do
     putStr "→ " >> print m
 
     -- TODO use a Map of functions instead. We can addSocket once.
-    case protocol of
-        "move" -> addSocket t key protocol c tid >> moveThread c t key
-        "chat" -> addSocket t key protocol c tid >> chatThread c t key
-        "mood" -> addSocket t key protocol c tid >> moodThread c t key
+    case pcol of
+        "move" -> addSocket t key pcol c tid >> moveThread c t key
+        "chat" -> addSocket t key pcol c tid >> chatThread c t key
+        "mood" -> addSocket t key pcol c tid >> moodThread c t key
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
 
--- FIXME undefined used
 -- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
-moveThread c t k = void . flip runStateT (defPlayer undefined) $ forever $ do
+moveThread c t k = forever $ do
     debugLine "Awaiting coordinates"
-    m <- liftIO $ receiveData c
+    m <- receiveData c
 
-    (Coords ox oy) <- coords <$> get
+    let mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ',') m
+        (x, y) = over both (maybe 0 id) mt
 
-    let (tx, ty) = T.drop 1 <$> T.break (== ',') m
-        (mx, my) = (readMay $ T.unpack tx, readMay $ T.unpack ty)
-        (x, y) = (maybe 0 id mx + ox, maybe 0 id my + oy)
+    modGame t $ flip modGamePlayer k $ \p ->
+        let (Coords x' y') = coords p
+        in p { coords = Coords (x + x') (y + y') }
 
-    modify $ \s -> s { coords = Coords x y }
+    getGamePlayer k <$> getGame t >>= debugLine . show
 
-    debugLine $ show x <> " x " <> show y
-
-    get >>= liftIO . sendTextData c . T.pack . show . coords
+    liftIO $ relayMessage t "move" $ k <> " " <> T.pack (show c)
 
 -- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -261,7 +281,7 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
 
     (Game _ db) <- atomically $ readTMVar t
 
-    ts <- liftIO getPOSIXTime
+    ts <- floor <$> liftIO getPOSIXTime
 
     debugStr "Checking local cache database... "
     dms <- DB.quickQuery' db moodSelect [ DB.toSql m ]
@@ -305,7 +325,7 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine $ "The message is: " <> fst (head sortedMoods)
 
     debugLine $ "Relaying message"
-    relayMessage t m
+    relayMessage t "chat" $ k <> " " <> T.pack (show ts) <> " " <> m
 
 -- | Thread and websocket for the user mood metadata.
 moodThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -313,7 +333,7 @@ moodThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Meta thread awaiting mood"
     mood <- takeMVar mv
 
-    sendTextData c mood
+    relayMessage t "mood" $ k <> " " <> mood
 
     putStr "→ " >> print mood
 
@@ -332,12 +352,12 @@ main = do
 
     debugLine "Initiating websocket server"
 
-    keyboardInput gameTM
-
     runServer "0.0.0.0" 8080 $ app gameTM
 
+    keyboardInput gameTM
+
   where
-    keyboardInput tg = forkIO $ forever $ do
+    keyboardInput tg = forever $ do
         l <- getLine
 
         g <- atomically $ readTMVar tg
@@ -346,5 +366,7 @@ main = do
             "game" -> print g
             "players" -> print $ players g
             "socks" -> M.mapKeys (T.take 10) <$> playerSocks tg >>= print
-            _ -> putStrLn "Commands: game"
+            ":q" -> exitSuccess
+            "quit" -> exitSuccess
+            _ -> putStrLn "Ask your 'self': what are you trying to achieve?"
 

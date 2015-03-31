@@ -90,36 +90,58 @@ function chatSend(m) {
 
     // TODO hide on successful post
     //chat.classList.add("hide")
-    chat.value = ""
+    chat.children[1].value = ""
 }
 
-// showChat :: IO ()
-function showChat() {
-    if (! chat) {
-        chat = document.createElement("input")
+// createChat :: IO ()
+function createChat() {
+    var wrap = document.createElement("div")
+    var chat = document.createElement("input")
+    var log = document.createElement("div")
 
-        chat.addEventListener("keypress", function(e) {
-            e.stopPropagation()
+    chat.addEventListener("keypress", function(e) {
+        if (e.keyCode === 13) chatSend(this.value)
+    })
 
-            if (e.keyCode === 13) chatSend(this.value)
-        })
+    wrap.appendChild(chat)
+    wrap.appendChild(log)
+    document.body.appendChild(wrap)
 
-        document.body.appendChild(chat)
-    }
-
-    chat.classList.remove("hide")
-
-    chat.focus()
+    return wrap
 }
 
+// addMsg :: String -> IO ()
+function addMsg(m) {
+    if (! chat) chat = createChat()
+
+    var msg = document.createElement("span")
+
+    msg.textContent = m
+
+    chat.children[0].appendChild(msg)
+}
+
+// toggleChat :: IO ()
+function toggleChat(b) {
+    if (! chat) chat = createChat()
+
+    if (b) chat.classList.remove("hide")
+    else chat.classList.add("hide")
+
+    chat.children[1].focus()
+}
+
+// chatter :: Event -> IO ()
 function chatter(m) {
-    logger(m)
+    addMsg(m.data)
 }
 
+// logger :: Event -> IO ()
 function logger(m) {
     console.log(m.data)
 }
 
+// mooder :: Event -> IO ()
 function mooder(m) {
     if (m.data === "upset") playerColor = "lightPink"
     else if (m.data === "happy") playerColor = "lightGreen"
@@ -212,7 +234,8 @@ function keydown(e) {
     if (keyboard.indexOf(e.keyCode) === -1 && e.keyCode >= 32)
         keyboard.push(e.keyCode)
 
-    if (e.keyCode === 13) showChat()
+    if (e.keyCode === 13) toggleChat(true)
+    else if (e.keyCode === 27) toggleChat(false)
 
     else if (! moving) requestAnimationFrame(move)
 
@@ -267,7 +290,7 @@ function setupCanvas(c) {
 
 
 function main() {
-    key = randomString(256)
+    key = randomString(10)
 
     mvws = connect(host, port, path, "move", key, logger)
     chws = connect(host, port, path, "chat", key, chatter)
