@@ -13,7 +13,8 @@ import           Control.Concurrent (ThreadId, myThreadId, forkIO, killThread)
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM (atomically)
 import           Control.Concurrent.STM.TMVar
-import           Control.Error (readMay, headMay)
+import           Control.Error (readMay, headMay, hush)
+import           Control.Exception (try)
 import           Control.Lens
 import           Control.Monad (forever)
 import           Control.Monad.State
@@ -234,10 +235,11 @@ playerMoodvar t key = do
 
 -- | Websocket initial thread function
 app :: TMVar Game -> PendingConnection -> IO ()
-app t p = do
+app t p = join . fmap handler . try $ do
     putStr "Incoming request from: "
     print . head . requestHeaders $ pendingRequest p
     c <- acceptRequest p
+
     (m :: Text) <- receiveData c
 
     let (pcol : key : _) = map (T.take 10) $ T.words m
@@ -255,6 +257,10 @@ app t p = do
         "chat" -> addSocket t key pcol c tid >> chatThread c t key
         "mood" -> addSocket t key pcol c tid >> moodThread c t key
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
+  where
+    handler :: Either ConnectionException () -> IO ()
+    handler (Left e) = print e
+    handler _ = return ()
 
 -- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -352,7 +358,7 @@ main = do
 
     debugLine "Initiating websocket server"
 
-    runServer "0.0.0.0" 8080 $ app gameTM
+    forkIO $ runServer "0.0.0.0" 8080 $ app gameTM
 
     keyboardInput gameTM
 

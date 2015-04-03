@@ -14,15 +14,22 @@ canvas
 }
 
 /* Chat wrapper */
-body > div:first-child
+body > div
 { position: fixed
+; bottom: 0
+}
+
+body > div > div
+{ display: flex
+; flex-direction: column
+; max-height: 25vh
+; color: white
+; background-color: rgba(0, 0, 0, 0.5)
 }
 
 /* Chat input */
 input
-{ bottom: 0
-; left: 0
-; width: 100vw
+{ width: 100vw
 ; padding: 1em
 ; background-color: rgba(0, 0, 0, 0.5)
 ; color: white

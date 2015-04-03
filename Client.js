@@ -86,25 +86,26 @@ function randomString(n) {
 
 // chatSend :: String -> IO ()
 function chatSend(m) {
-    chws.send(m)
+    if (m.length > 0) {
+        chws.send(m)
 
-    // TODO hide on successful post
-    //chat.classList.add("hide")
-    chat.children[1].value = ""
+        chat.classList.add("hide")
+        chat.children[1].value = ""
+    }
 }
 
 // createChat :: IO ()
 function createChat() {
     var wrap = document.createElement("div")
     var chat = document.createElement("input")
-    var log = document.createElement("div")
+    var logs = document.createElement("div")
 
     chat.addEventListener("keypress", function(e) {
         if (e.keyCode === 13) chatSend(this.value)
     })
 
+    wrap.appendChild(logs)
     wrap.appendChild(chat)
-    wrap.appendChild(log)
     document.body.appendChild(wrap)
 
     return wrap
@@ -138,7 +139,7 @@ function chatter(m) {
 
 // logger :: Event -> IO ()
 function logger(m) {
-    console.log(m.data)
+    log(m.data)
 }
 
 // mooder :: Event -> IO ()
@@ -231,25 +232,29 @@ function keyElem(k, e) {
 // XXX do we ever use < 32?
 // keydown :: Event -> IO ()
 function keydown(e) {
-    if (keyboard.indexOf(e.keyCode) === -1 && e.keyCode >= 32)
-        keyboard.push(e.keyCode)
+    if (e.target === document.body) {
+        if (keyboard.indexOf(e.keyCode) === -1 && e.keyCode >= 32)
+            keyboard.push(e.keyCode)
 
-    if (e.keyCode === 13) toggleChat(true)
-    else if (e.keyCode === 27) toggleChat(false)
+        if (e.keyCode === 13) toggleChat(true)
+        else if (e.keyCode === 27) toggleChat(false)
 
-    else if (! moving) requestAnimationFrame(move)
+        else if (! moving) requestAnimationFrame(move)
 
-    console.log(keyboard)
+        log(keyboard)
+    }
 }
 
 // keyup :: Event -> IO ()
 function keyup(e) {
-    for (var i = keyboard.length - 1; i >= 0; i--)
-        if (keyboard[i] === e.keyCode) keyboard.splice(i, 1)
+    if (e.target === document.body) {
+        for (var i = keyboard.length - 1; i >= 0; i--)
+            if (keyboard[i] === e.keyCode) keyboard.splice(i, 1)
 
-    if (! moving) requestAnimationFrame(move)
+        if (! moving) requestAnimationFrame(move)
 
-    console.log(keyboard)
+        log(keyboard)
+    }
 }
 
 // connect :: String -> Int -> String -> String -> IO WebSocket
@@ -269,6 +274,7 @@ function disconnectAll() {
 
     for (var i = 0, len = ss.length; i < len; i++) {
         ss[i].onclose = function() {}
+        ss[i].onmessage = function() {}
         ss[i].close()
     }
 
