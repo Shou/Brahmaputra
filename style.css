@@ -22,9 +22,11 @@ body > div
 body > div > div
 { display: flex
 ; flex-direction: column
+; height: 25vh
 ; max-height: 25vh
 ; color: white
 ; background-color: rgba(0, 0, 0, 0.5)
+; border-top: 3px solid #d0d0d0
 }
 
 /* Chat input */

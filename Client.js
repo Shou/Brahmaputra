@@ -89,8 +89,9 @@ function chatSend(m) {
     if (m.length > 0) {
         chws.send(m)
 
-        chat.classList.add("hide")
+        toggleChat(false)
         chat.children[1].value = ""
+
     }
 }
 
@@ -124,12 +125,13 @@ function addMsg(m) {
 
 // toggleChat :: IO ()
 function toggleChat(b) {
+    log("toggleChat(" + b + ")")
     if (! chat) chat = createChat()
 
-    if (b) chat.classList.remove("hide")
-    else chat.classList.add("hide")
-
-    chat.children[1].focus()
+    if (b) {
+        chat.classList.remove("hide")
+        chat.children[1].focus()
+    } else chat.classList.add("hide")
 }
 
 // chatter :: Event -> IO ()
@@ -144,6 +146,7 @@ function logger(m) {
 
 // mooder :: Event -> IO ()
 function mooder(m) {
+    log(m)
     if (m.data === "upset") playerColor = "lightPink"
     else if (m.data === "happy") playerColor = "lightGreen"
     else playerColor = "white"
@@ -237,12 +240,12 @@ function keydown(e) {
             keyboard.push(e.keyCode)
 
         if (e.keyCode === 13) toggleChat(true)
-        else if (e.keyCode === 27) toggleChat(false)
 
         else if (! moving) requestAnimationFrame(move)
 
         log(keyboard)
-    }
+
+    } else if (e.keyCode === 27) toggleChat(false)
 }
 
 // keyup :: Event -> IO ()

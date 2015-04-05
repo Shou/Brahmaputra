@@ -40,6 +40,11 @@ import System.Exit (exitSuccess)
 
 -- }}}
 
+
+-- FIXME relay shouldn't relay to closed websockets.
+--      - Hacky solution to this currently enacted, fix.
+
+
 -- {{{ Constants
 
 debug = True
@@ -200,7 +205,11 @@ relayMessage tg p m = M.toList <$> playerSocks tg >>= liftIO . unwrap (getSock s
     getSock :: a ~> IO () -> Map Text (a, b) -> IO ()
     getSock f = maybe (putStrLn "no") (f . fst) . M.lookup p
     send :: Connection -> IO ()
-    send = flip sendTextData m
+    send c = handle c $ flip sendTextData m c
+    handle :: Connection -> IO () -> IO ()
+    handle c io = either (relayPrintError c) return =<< try io
+    relayPrintError :: Connection -> ConnectionException -> IO ()
+    relayPrintError c _ = putStr "Relay closed: " >> print c
 
 -- | Add player websocket and thread to Game state.
 addSocket :: TMVar Game -> Text -> Text -> Connection -> ThreadId -> IO ()
