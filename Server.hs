@@ -262,14 +262,30 @@ app t p = join . fmap handler . try $ do
 
     -- TODO use a Map of functions instead. We can addSocket once.
     case pcol of
-        "move" -> addSocket t key pcol c tid >> moveThread c t key
-        "chat" -> addSocket t key pcol c tid >> chatThread c t key
-        "mood" -> addSocket t key pcol c tid >> moodThread c t key
+        "move" -> initMove t c pcol key tid
+        "chat" -> initChat t c pcol key tid
+        "mood" -> initMood t c pcol key tid
         _ -> sendTextData c ("404 Stream Not Found" :: Text)
   where
     handler :: Either ConnectionException () -> IO ()
     handler (Left e) = print e
     handler _ = return ()
+
+initMove t c pcol key tid = do
+    addSocket t key pcol c tid
+
+    cs <- map coords . M.toList . players <$> getGame t
+    forM_ cs $ sendTextData c . ((key <> " c ") <>) . show
+
+    moveThread c t key
+
+initChat t c pcol key tid = do
+    addSocket t key pcol c tid
+    chatThread c t key
+
+initMood t c pcol key tid = do
+    addSocket t key pcol c tid
+    moodThread c t key
 
 -- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -277,7 +293,7 @@ moveThread c t k = forever $ do
     debugLine "Awaiting coordinates"
     m <- receiveData c
 
-    let mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ',') m
+    let mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
         (x, y) = over both (maybe 0 id) mt
 
     modGame t $ flip modGamePlayer k $ \p ->
@@ -286,7 +302,7 @@ moveThread c t k = forever $ do
 
     getGamePlayer k <$> getGame t >>= debugLine . show
 
-    liftIO $ relayMessage t "move" $ k <> " " <> T.pack (show c)
+    liftIO $ relayMessage t "move" $ k <> " v " <> m
 
 -- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()

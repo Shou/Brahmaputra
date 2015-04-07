@@ -2,7 +2,7 @@
 // {{{ Constants
 
 // host, path :: String
-var host = "localhost"
+var host = window.location.host
 var path = "/"
 // port :: Int
 var port = 8080
@@ -13,8 +13,31 @@ var maxSpeed = 2
 // speedStep :: Float
 var speedStep = maxSpeed / 10
 
-// key :: String
-var key
+// selfKey :: String
+var selfKey
+
+
+// voiceURL :: String
+var voiceURL = "https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&q="
+
+// audio :: AudioElement
+var audio
+
+// iframe :: IFrameElement
+var iframe
+
+// }}}
+
+// {{{ Data
+
+// Player :: Int -> Int -> Int -> Int -> String -> Player
+function Player(x, y, sX, sY, color) {
+    this.x = x
+    this.y = y
+    this.speedX = sX
+    this.speedY = sY
+    this.color = color
+}
 
 // }}}
 
@@ -31,20 +54,15 @@ var keyConfig =
 // keyboard :: [Int]
 var keyboard = []
 
-// player :: Object String Int
-var player =
-    { x: 0
-    , y: 0
-    }
+// players :: Object String Player
+var players = {}
 
-var stepX = 0
-var stepY = 0
+// moving :: Bool
+var moving = false
 
-var playerColor = "white"
-
-// | Player coordinate websocket
-// cows :: WebSocket
-var cows
+// | Player movement vector websocket
+// mvws :: WebSocket
+var mvws
 // | Chat websocket
 // chws :: WebSocket
 var chws
@@ -57,9 +75,7 @@ var cv
 // cx :: CanvasContext
 var cx
 
-var speedX = 0
-var speedY = 0
-
+// chat :: Element
 var chat
 
 // }}}
@@ -112,6 +128,16 @@ function createChat() {
     return wrap
 }
 
+// talkToMeBaby :: String -> IO ()
+function talkToMeBaby(text) {
+    var aud = top.frames[0].document.body.querySelector("audio")
+
+    if (! aud) aud = top.frames[0].document.body.appendChild(audio)
+
+    aud.src = voiceURL + encodeURIComponent(text)
+    aud.play()
+}
+
 // addMsg :: String -> IO ()
 function addMsg(m) {
     if (! chat) chat = createChat()
@@ -119,6 +145,9 @@ function addMsg(m) {
     var msg = document.createElement("span")
 
     msg.textContent = m
+
+    var mcon = m.split(' ').slice(2).join(' ').slice(0, 100)
+    talkToMeBaby(mcon)
 
     chat.children[0].appendChild(msg)
 }
@@ -139,19 +168,75 @@ function chatter(m) {
     addMsg(m.data)
 }
 
-// logger :: Event -> IO ()
-function logger(m) {
+// mover :: Event -> IO ()
+function mover(m) {
     log(m.data)
+    var args = m.data.split(' ')
+
+    var key = args[0]
+    if (! (key === selfKey)) {
+        if (! (key in players)) {
+            log(key + " adding to players")
+            players[key] = new Player(0, 0, 0, 0, "white")
+        }
+
+        var pcol = args[1]
+
+        // Speed vector
+        if (pcol === "v") {
+            players[key].speedX = parseInt(args[2])
+            players[key].speedY = parseInt(args[3])
+
+        // Coordinates
+        } else if (pcol === "c") {
+            players[key].x = parseInt(args[2])
+            players[key].y = parseInt(args[3])
+        }
+
+        if (! moving) requestAnimationFrame(movePlayers)
+    }
 }
 
 // mooder :: Event -> IO ()
 function mooder(m) {
-    log(m)
-    if (m.data === "upset") playerColor = "lightPink"
-    else if (m.data === "happy") playerColor = "lightGreen"
-    else playerColor = "white"
+    var md = m.data.split(' ')
+    playerMood(md[0], md[1])
+}
 
-    draw(player.x, player.y, playerColor)
+// playerMood :: String -> String -> IO ()
+function playerMood(key, mood) {
+    if (mood === "upset") players[key].color = "lightPink"
+    else if (mood === "happy") players[key].color = "lightGreen"
+    else players[key].color = "white"
+
+    drawPlayer(key)
+}
+
+// movePlayers :: IO ()
+function movePlayers() {
+    var next = requestAnimationFrame(movePlayers)
+    moving = false
+
+    // Clear the canvas
+    cx.clearRect(0, 0, cv.width, cv.height)
+
+    for (key in players) moving = moving || movePlayer(key)
+
+    if (! moving) cancelAnimationFrame(next)
+}
+
+// movePlayer :: String -> IO Bool
+function movePlayer(key) {
+    var ox = players[key].x
+    var oy = players[key].y
+
+    players[key].x += players[key].speedX * 5
+    players[key].y += players[key].speedY * 5
+
+    drawPlayer(key)
+
+    if (ox !== players[key].x || oy !== players[key].y) log(key + " moving")
+    return ! (ox === players[key].x && oy === players[key].y)
 }
 
 // TODO slow down movement when keyboard is empty, towards even pixel number.
@@ -160,7 +245,8 @@ function move() {
     var next = requestAnimationFrame(move)
     moving = true
 
-    // FIXME right/down accelerates left/up to insane speeds when used after
+    // FIXME right/down accelerates left/up to insane speeds when used in quick
+    //       succession
     if (keyElem("right")) {
         stepX = Math.min(++stepX, 10)
         speedX = Math.sin(Math.PI / 2 / playerSize * stepX) * maxSpeed
@@ -187,8 +273,8 @@ function move() {
         speedY = Math.cos(Math.PI / 2 / playerSize * stepY) * maxSpeed
     }
 
-    player.x += speedX
-    player.y += speedY
+    player.x += player.speedX
+    player.y += player.speedY
 
     // Don't go outside the canvas
     if (player.x < 0) player.x = 0
@@ -198,7 +284,7 @@ function move() {
 
     log(player.x + " x " + player.y + ": " + speedX + " * " + speedY)
 
-    draw(player.x, player.y, playerColor)
+    drawPlayer(selfKey)
 
     var emptyKeyboard = keyboard.length === 0
     var evenX = Math.round(player.x) % playerSize === 0
@@ -208,55 +294,74 @@ function move() {
         speedX = speedY = 0
         cancelAnimationFrame(next)
         moving = false
-
     }
 
     if (emptyKeyboard && evenX) speedX = 0
     if (emptyKeyboard && evenY) speedY = 0
 }
 
-// draw :: Int -> Int -> IO ()
-function draw(x, y, pc) {
-    cx.clearRect(0, 0, cv.width, cv.height)
-    cx.fillStyle = pc
-    cx.fillRect( x
-               , y
+// draw :: String -> IO ()
+function drawPlayer(key) {
+    cx.fillStyle = players[key].color
+    cx.fillRect( players[key].x
+               , players[key].y
                , playerSize
                , playerSize
                )
 }
 
-// keyElem :: String -> Int -> Bool
-function keyElem(k, e) {
-    for (var i = 0; i < keyboard.length; i++)
-        if (keyConfig[k].indexOf(keyboard[i]) !== -1) return true
+// keyMove :: Int -> IO ()
+function keyMove(s) {
+    for (i = 0, l = keyboard.length; i < l; i++) {
+        var n = keyboard[i]
+
+        for (var j = 0, l = keyConfig.up.length; j < l; j++)
+            if (n === keyConfig.up[j]) {
+                players[selfKey].speedY = -s
+            }
+        for (var j = 0, l = keyConfig.down.length; j < l; j++)
+            if (n === keyConfig.down[j]) {
+                players[selfKey].speedY = s
+            }
+        for (var j = 0, l = keyConfig.right.length; j < l; j++)
+            if (n === keyConfig.right[j]) {
+                players[selfKey].speedX = s
+            }
+        for (var j = 0, l = keyConfig.left.length; j < l; j++)
+            if (n === keyConfig.left[j]) {
+                players[selfKey].speedX = -s
+            }
+    }
+
+    log(players[selfKey].speedX + " x " + players[selfKey].speedY)
 }
 
-// XXX do we ever use < 32?
 // keydown :: Event -> IO ()
 function keydown(e) {
-    if (e.target === document.body) {
-        if (keyboard.indexOf(e.keyCode) === -1 && e.keyCode >= 32)
-            keyboard.push(e.keyCode)
-
+    if (e.target === document.body && keyboard.indexOf(e.keyCode) === -1) {
         if (e.keyCode === 13) toggleChat(true)
 
-        else if (! moving) requestAnimationFrame(move)
+        else {
+            keyboard.push(e.keyCode)
 
-        log(keyboard)
+            keyMove(1)
+
+            mvws.send(players[selfKey].speedX + " " + players[selfKey].speedY)
+
+            if (! moving) requestAnimationFrame(movePlayers)
+        }
 
     } else if (e.keyCode === 27) toggleChat(false)
 }
 
 // keyup :: Event -> IO ()
 function keyup(e) {
-    if (e.target === document.body) {
-        for (var i = keyboard.length - 1; i >= 0; i--)
-            if (keyboard[i] === e.keyCode) keyboard.splice(i, 1)
+    if (e.target === document.body && keyboard.indexOf(e.keyCode) !== -1) {
+        keyMove(0)
 
-        if (! moving) requestAnimationFrame(move)
+        keyboard.splice(keyboard.indexOf(e.keyCode), 1)
 
-        log(keyboard)
+        mvws.send(players[selfKey].speedX + " " + players[selfKey].speedY)
     }
 }
 
@@ -265,7 +370,7 @@ function connect(host, port, path, protocol, key, f) {
     var ws = new WebSocket("ws://" + host + ':' + port + path)
 
     ws.onopen = function(_) { ws.send(protocol + " " + key) }
-    ws.onclose = function(_) { ws.close() }
+    ws.onclose = function(_) {  }
     ws.onmessage = f
 
     return ws
@@ -292,20 +397,23 @@ function setupCanvas(c) {
     c.height = window.innerHeight
     var cx = c.getContext("2d")
 
-    cx.fillStyle = playerColor
-
     return cx
 }
 
 
 function main() {
-    key = randomString(10)
+    selfKey = randomString(10)
 
-    mvws = connect(host, port, path, "move", key, logger)
-    chws = connect(host, port, path, "chat", key, chatter)
-    mows = connect(host, port, path, "mood", key, mooder)
+    players[selfKey] = new Player(0, 0, 0, 0, "white")
+
+    mvws = connect(host, port, path, "move", selfKey, mover)
+    chws = connect(host, port, path, "chat", selfKey, chatter)
+    mows = connect(host, port, path, "mood", selfKey, mooder)
 
     window.onbeforeunload = disconnectAll
+
+    audio = document.querySelector("audio")
+    iframe = document.querySelector("iframe")
 
     cv = document.querySelector("canvas")
     cx = setupCanvas(cv)
@@ -313,6 +421,7 @@ function main() {
     document.body.addEventListener("keydown", keydown)
     document.body.addEventListener("keyup", keyup)
 
-    move(0, 0)
+    drawPlayer(selfKey)
+    movePlayers()
 }
 
