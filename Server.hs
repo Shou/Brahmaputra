@@ -77,12 +77,12 @@ infixl 1 &>
 
 
 data Game = Game { players :: Map Text Player
+                 , chat :: Chat
                  , database :: DB.Connection
                  }
     deriving (Show)
 
-data Player = Player { key :: Text
-                     , coords :: Coords Int Int
+data Player = Player { coords :: Coords Int Int
                      , wsockets :: Map Text (Connection, ThreadId)
                      , moodvar :: MVar Text
                      }
@@ -99,6 +99,11 @@ instance (Num a ~ Num a') => Field1 (Coords a b) (Coords a' b) a a' where
 
 instance (Num b ~ Num b') => Field2 (Coords a b) (Coords a b') b b' where
     _2 k (Coords x y) = (\y' -> Coords x y') <$> k y
+
+data Chat = Chat { history :: [Message] }
+
+-- | Message composed of username, timestamp, and contents.
+type Message = (Text, Int, Text)
 
 data Classify =
     Classify { version :: String
@@ -130,7 +135,7 @@ instance Show (MVar a) where
 -- {{{ Data utils
 
 defPlayer :: MVar Text -> Player
-defPlayer = Player mempty (Coords 0 0) mempty
+defPlayer = Player (Coords 0 0) mempty
 
 modGamePlayer :: Player ~> Player -> Text -> Game -> Game
 modGamePlayer f user g =
@@ -153,6 +158,9 @@ getGame tg = atomically $ readTMVar tg
 coordsTuple :: Coords a b -> (a, b)
 coordsTuple (Coords x y) = (x, y)
 
+io :: MonadIO m => IO a -> m a
+io = liftIO
+
 -- }}}
 
 -- {{{ Utilities
@@ -165,6 +173,14 @@ debugLine = liftIO . putStrLn
 
 traceMod :: Show b => (a -> b) -> a -> a
 traceMod f a = trace (show $ f a) a
+
+numNot :: (Eq a, Num a) => a -> a
+numNot 0 = 1
+numNot _ = 0
+
+numTrunc :: (Eq a, Num a) => a -> a
+numTrunc 0 = 0
+numTrunc n = 1
 
 -- }}}
 
@@ -274,8 +290,9 @@ app t p = join . fmap handler . try $ do
 initMove t c pcol key tid = do
     addSocket t key pcol c tid
 
-    cs <- map coords . M.toList . players <$> getGame t
-    forM_ cs $ sendTextData c . ((key <> " c ") <>) . show
+    cs <- map (over _2 coords) . M.toList . players <$> getGame t
+    forM_ cs $ \(ke, co) ->
+        sendTextData c . ((ke <> " c ") <>) . T.pack . show $ co
 
     moveThread c t key
 
@@ -289,20 +306,29 @@ initMood t c pcol key tid = do
 
 -- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
-moveThread c t k = forever $ do
+moveThread c t k = void . flip runStateT 0 . forever $ do
     debugLine "Awaiting coordinates"
-    m <- receiveData c
+    m <- io $ receiveData c
 
-    let mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
-        (x, y) = over both (maybe 0 id) mt
+    nt <- io $ floor . (* 1000) <$> getPOSIXTime
+    ot <- get
+    put nt
 
-    modGame t $ flip modGamePlayer k $ \p ->
+    -- XXX
+    -- Theoretically time can be equal to nt because of the initial state,
+    -- however this is implausible becase the user has to send a stop vector
+    -- before a start vector, i.e. (0, 0) before (n, m) where n or m > 0.
+    let time = nt - ot
+        mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
+        (x, y) = over both (numTrunc . maybe 0 ((time *) . numNot)) mt
+
+    io $ modGame t $ flip modGamePlayer k $ \p ->
         let (Coords x' y') = coords p
         in p { coords = Coords (x + x') (y + y') }
 
-    getGamePlayer k <$> getGame t >>= debugLine . show
+    io $ getGamePlayer k <$> getGame t >>= debugLine . show
 
-    liftIO $ relayMessage t "move" $ k <> " v " <> m
+    io $ relayMessage t "move" $ k <> " v " <> m
 
 -- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -396,6 +422,9 @@ main = do
         case l of
             "game" -> print g
             "players" -> print $ players g
+            ('p':'l':'a':'y':'e':'r':' ':key) ->
+                print $ getGamePlayer (T.pack key) g
+
             "socks" -> M.mapKeys (T.take 10) <$> playerSocks tg >>= print
             ":q" -> exitSuccess
             "quit" -> exitSuccess

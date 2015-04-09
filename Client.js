@@ -9,9 +9,8 @@ var port = 8080
 
 // playerSize, maxSpeed :: Int
 var playerSize = 10
-var maxSpeed = 2
-// speedStep :: Float
-var speedStep = maxSpeed / 10
+// | Max speed per second
+var maxSpeed = 50
 
 // selfKey :: String
 var selfKey
@@ -60,6 +59,14 @@ var players = {}
 // moving :: Bool
 var moving = false
 
+// | Old timestamp for rAF(movePlayers)
+// ots :: Double
+var ots = 0
+
+// | Timestamp of rAF(movePlayers) first run
+// fts :: Double
+var fts = 0
+
 // | Player movement vector websocket
 // mvws :: WebSocket
 var mvws
@@ -98,6 +105,12 @@ function randomString(n) {
     return str
 }
 
+// elem :: a -> [a] -> Bool
+function elem(x, xs) {
+    for (var i = 0, l = xs.length; i < l; i++) if (x === xs[i]) return true
+    return false
+}
+
 // }}}
 
 // chatSend :: String -> IO ()
@@ -130,9 +143,9 @@ function createChat() {
 
 // talkToMeBaby :: String -> IO ()
 function talkToMeBaby(text) {
-    var aud = top.frames[0].document.body.querySelector("audio")
+    var aud = frames[0].document.body.querySelector("audio")
 
-    if (! aud) aud = top.frames[0].document.body.appendChild(audio)
+    if (! aud) aud = frames[0].document.body.appendChild(audio)
 
     aud.src = voiceURL + encodeURIComponent(text)
     aud.play()
@@ -212,26 +225,33 @@ function playerMood(key, mood) {
     drawPlayer(key)
 }
 
-// movePlayers :: IO ()
-function movePlayers() {
+// movePlayers :: Double -> IO ()
+function movePlayers(ts) {
     var next = requestAnimationFrame(movePlayers)
     moving = false
 
     // Clear the canvas
     cx.clearRect(0, 0, cv.width, cv.height)
 
-    for (key in players) moving = moving || movePlayer(key)
+    ts = ts * 0.001
+    var speed = (ts - ots) * maxSpeed
+    log("Moving " + speed)
+
+    for (key in players) moving = movePlayer(key, speed) || moving
+
+    ots = ts
 
     if (! moving) cancelAnimationFrame(next)
 }
 
 // movePlayer :: String -> IO Bool
-function movePlayer(key) {
+function movePlayer(key, speed) {
+    log("Moving player " + key)
     var ox = players[key].x
     var oy = players[key].y
 
-    players[key].x += players[key].speedX * 5
-    players[key].y += players[key].speedY * 5
+    players[key].x += players[key].speedX * speed
+    players[key].y += players[key].speedY * speed
 
     drawPlayer(key)
 
@@ -311,26 +331,15 @@ function drawPlayer(key) {
 }
 
 // keyMove :: Int -> IO ()
-function keyMove(s) {
+function keyMove(s, n) {
     for (i = 0, l = keyboard.length; i < l; i++) {
-        var n = keyboard[i]
+        // XXX hack: override n with arg n, to ensure unary coords change
+        if (s !== 0) n = keyboard[i]
 
-        for (var j = 0, l = keyConfig.up.length; j < l; j++)
-            if (n === keyConfig.up[j]) {
-                players[selfKey].speedY = -s
-            }
-        for (var j = 0, l = keyConfig.down.length; j < l; j++)
-            if (n === keyConfig.down[j]) {
-                players[selfKey].speedY = s
-            }
-        for (var j = 0, l = keyConfig.right.length; j < l; j++)
-            if (n === keyConfig.right[j]) {
-                players[selfKey].speedX = s
-            }
-        for (var j = 0, l = keyConfig.left.length; j < l; j++)
-            if (n === keyConfig.left[j]) {
-                players[selfKey].speedX = -s
-            }
+        if (elem(n, keyConfig.right)) players[selfKey].speedX = s
+        else if (elem(n, keyConfig.left)) players[selfKey].speedX = -s
+        else if (elem(n, keyConfig.down)) players[selfKey].speedY = s
+        else if (elem(n, keyConfig.up)) players[selfKey].speedY = -s
     }
 
     log(players[selfKey].speedX + " x " + players[selfKey].speedY)
@@ -348,7 +357,10 @@ function keydown(e) {
 
             mvws.send(players[selfKey].speedX + " " + players[selfKey].speedY)
 
-            if (! moving) requestAnimationFrame(movePlayers)
+            if (! moving) {
+                ots = (new Date()).getTime() * 0.001 - fts
+                requestAnimationFrame(movePlayers)
+            }
         }
 
     } else if (e.keyCode === 27) toggleChat(false)
@@ -357,7 +369,7 @@ function keydown(e) {
 // keyup :: Event -> IO ()
 function keyup(e) {
     if (e.target === document.body && keyboard.indexOf(e.keyCode) !== -1) {
-        keyMove(0)
+        keyMove(0, e.keyCode)
 
         keyboard.splice(keyboard.indexOf(e.keyCode), 1)
 
@@ -366,14 +378,21 @@ function keyup(e) {
 }
 
 // connect :: String -> Int -> String -> String -> IO WebSocket
-function connect(host, port, path, protocol, key, f) {
+function connect(host, port, path, pcol, key, f) {
     var ws = new WebSocket("ws://" + host + ':' + port + path)
 
-    ws.onopen = function(_) { ws.send(protocol + " " + key) }
-    ws.onclose = function(_) {  }
+    ws.onopen = function(_) { ws.send(pcol + " " + key) }
+    ws.onclose = function(_) {
+        setTimeout(function() {
+            log("Reconnecting to " + pcol)
+            connect(host, port, path, pcol, key, f)
+        }, 500)
+    }
     ws.onmessage = f
 
-    return ws
+    if (pcol === "move") mvws = ws
+    else if (pcol === "chat") chws = ws
+    else if (pcol === "mood") mows = ws
 }
 
 // disconnectAll :: IO ()
@@ -406,9 +425,9 @@ function main() {
 
     players[selfKey] = new Player(0, 0, 0, 0, "white")
 
-    mvws = connect(host, port, path, "move", selfKey, mover)
-    chws = connect(host, port, path, "chat", selfKey, chatter)
-    mows = connect(host, port, path, "mood", selfKey, mooder)
+    connect(host, port, path, "move", selfKey, mover)
+    connect(host, port, path, "chat", selfKey, chatter)
+    connect(host, port, path, "mood", selfKey, mooder)
 
     window.onbeforeunload = disconnectAll
 
@@ -422,6 +441,9 @@ function main() {
     document.body.addEventListener("keyup", keyup)
 
     drawPlayer(selfKey)
-    movePlayers()
+    requestAnimationFrame(movePlayers)
+    requestAnimationFrame(function() {
+        fts = (new Date()).getTime() * 0.001
+    })
 }
 

@@ -31,6 +31,10 @@ body > div > div
 ; overflow-y: auto
 }
 
+body > div > div > span
+{ display: block
+}
+
 /* Chat input */
 input
 { width: 100vw
