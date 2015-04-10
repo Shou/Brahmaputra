@@ -24,7 +24,7 @@ import           Data.List (sortBy)
 import           Data.Map (Map)
 import qualified Data.Map as M
 import           Data.Maybe (isNothing, fromJust)
-import           Data.Monoid ((<>), mempty)
+import           Data.Monoid (Monoid(..), (<>), mempty)
 import           Data.Ord (comparing)
 import           Data.Text (Text)
 import qualified Data.Text as T
@@ -69,7 +69,7 @@ infixr 2 $
 
 -- | Parentheses wrapping closest pair.
 type (~>) = (->)
-infixl 5 ~>
+infixl 8 ~>
 
 -- | Left-associative function type.
 type (&>) = (->)
@@ -100,10 +100,17 @@ instance (Num a ~ Num a') => Field1 (Coords a b) (Coords a' b) a a' where
 instance (Num b ~ Num b') => Field2 (Coords a b) (Coords a b') b b' where
     _2 k (Coords x y) = (\y' -> Coords x y') <$> k y
 
-data Chat = Chat { history :: [Message] }
+data Chat = Chat { history :: [ChatMsg] }
+
+instance Show Chat where
+    show c = "Chat (" ++ show (length $ history c) ++ " msg)"
+
+instance Monoid Chat where
+    mempty = Chat mempty
+    mappend (Chat xs) (Chat ys) = Chat $ mappend xs ys
 
 -- | Message composed of username, timestamp, and contents.
-type Message = (Text, Int, Text)
+type ChatMsg = (Text, Int, Text)
 
 data Classify =
     Classify { version :: String
@@ -157,6 +164,11 @@ getGame tg = atomically $ readTMVar tg
 
 coordsTuple :: Coords a b -> (a, b)
 coordsTuple (Coords x y) = (x, y)
+
+insHistory :: ChatMsg -> Game -> Game
+insHistory cm g = g { chat = c { history = take 100 (history c) <> [cm] } }
+  where
+    c = chat g
 
 io :: MonadIO m => IO a -> m a
 io = liftIO
@@ -306,7 +318,7 @@ initMood t c pcol key tid = do
 
 -- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
-moveThread c t k = void . flip runStateT 0 . forever $ do
+moveThread c t k = pt >>= \t0 -> void . flip runStateT t0 . forever $ do
     debugLine "Awaiting coordinates"
     m <- io $ receiveData c
 
@@ -318,17 +330,27 @@ moveThread c t k = void . flip runStateT 0 . forever $ do
     -- Theoretically time can be equal to nt because of the initial state,
     -- however this is implausible becase the user has to send a stop vector
     -- before a start vector, i.e. (0, 0) before (n, m) where n or m > 0.
+    -- FIXME FIXME FIXME
+    -- potential bug involving the assumption that a STOP is the only
+    -- requirement to assume we can add time to the player, we need more
+    -- server-side state. Client-side can be abused.
     let time = nt - ot
         mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
-        (x, y) = over both (numTrunc . maybe 0 ((time *) . numNot)) mt
+        (x, y) = over both (maybe 0 ((time *) . numNot)) mt
 
-    io $ modGame t $ flip modGamePlayer k $ \p ->
-        let (Coords x' y') = coords p
-        in p { coords = Coords (x + x') (y + y') }
+    io $ do
+        putStrLn $ "Time " <> show time
+        putStrLn $ show (x, y)
 
-    io $ getGamePlayer k <$> getGame t >>= debugLine . show
+        modGame t $ flip modGamePlayer k $ \p ->
+            let (Coords x' y') = coords p
+            in p { coords = Coords (x + x') (y + y') }
 
-    io $ relayMessage t "move" $ k <> " v " <> m
+        getGamePlayer k <$> getGame t >>= debugLine . show
+
+        relayMessage t "move" $ k <> " v " <> m
+  where
+    pt = floor . (* 1000) <$> getPOSIXTime
 
 -- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -336,7 +358,7 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Awaiting chat message"
     (m :: Text) <- receiveData c
 
-    (Game _ db) <- atomically $ readTMVar t
+    (Game _ _ db) <- atomically $ readTMVar t
 
     ts <- floor <$> liftIO getPOSIXTime
 
@@ -384,6 +406,8 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine $ "Relaying message"
     relayMessage t "chat" $ k <> " " <> T.pack (show ts) <> " " <> m
 
+    modGame t $ insHistory (k, ts, m)
+
 -- | Thread and websocket for the user mood metadata.
 moodThread :: Connection -> TMVar Game -> Text -> IO ()
 moodThread c t k = playerMoodvar t k >>= \mv -> forever $ do
@@ -405,7 +429,7 @@ main = do
 
     DB.run db moodsTable []
 
-    gameTM <- newTMVarIO $ Game mempty db
+    gameTM <- newTMVarIO $ Game mempty mempty db
 
     debugLine "Initiating websocket server"
 

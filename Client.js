@@ -202,8 +202,8 @@ function mover(m) {
 
         // Coordinates
         } else if (pcol === "c") {
-            players[key].x = parseInt(args[2])
-            players[key].y = parseInt(args[3])
+            players[key].x = parseInt(args[2]) * maxSpeed * 0.001
+            players[key].y = parseInt(args[3]) * maxSpeed * 0.001
         }
 
         if (! moving) requestAnimationFrame(movePlayers)
@@ -235,7 +235,6 @@ function movePlayers(ts) {
 
     ts = ts * 0.001
     var speed = (ts - ots) * maxSpeed
-    log("Moving " + speed)
 
     for (key in players) moving = movePlayer(key, speed) || moving
 
@@ -246,16 +245,18 @@ function movePlayers(ts) {
 
 // movePlayer :: String -> IO Bool
 function movePlayer(key, speed) {
-    log("Moving player " + key)
     var ox = players[key].x
     var oy = players[key].y
 
     players[key].x += players[key].speedX * speed
     players[key].y += players[key].speedY * speed
 
+    // TODO merge this with directly above
+    if (players[key].x < 0) players[key].x = 0
+    if (players[key].y < 0) players[key].y = 0
+
     drawPlayer(key)
 
-    if (ox !== players[key].x || oy !== players[key].y) log(key + " moving")
     return ! (ox === players[key].x && oy === players[key].y)
 }
 
