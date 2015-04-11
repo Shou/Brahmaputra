@@ -323,7 +323,7 @@ moveThread c t k = pt >>= \t0 -> void . flip runStateT t0 . forever $ do
     m <- io $ receiveData c
 
     nt <- io $ floor . (* 1000) <$> getPOSIXTime
-    ot <- get
+    (ot, oc) <- get
     put nt
 
     -- XXX

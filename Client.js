@@ -68,14 +68,18 @@ var ots = 0
 var fts = 0
 
 // | Player movement vector websocket
-// mvws :: WebSocket
-var mvws
+// movews :: WebSocket
+var movews
 // | Chat websocket
-// chws :: WebSocket
-var chws
+// chatws :: WebSocket
+var chatws
 // | Mood websocket
-// mows :: WebSocket
-var mows
+// moodws :: WebSocket
+var moodws
+
+// | Delay before reconnecting to Websocket
+// connectDelay :: Int
+var connectDelay = 500
 
 // cv :: Canvas
 var cv
@@ -105,10 +109,110 @@ function randomString(n) {
     return str
 }
 
-// elem :: a -> [a] -> Bool
-function elem(x, xs) {
+// }}}
+
+// {{{ Functional programming
+
+// Curry helper function
+var _cur = function(f) {
+    var args = [].slice.call(arguments, 1)
+
+    return function() {
+        return f.apply(this, args.concat([].slice.call(arguments, 0)))
+    }
+}
+
+// | Currying, the best thing to pour over a dish of chicken and rice.
+// cu :: (a -> b -> n) -> (a -> (b -> n))
+var cu = function(f, len) {
+    var args = [].slice.call(arguments, 1)
+      , len = len || f.length
+
+    return function() {
+        if (arguments.length < len) {
+            var comb = [f].concat([].slice.call(arguments, 0))
+
+            return len - arguments.length > 0
+                ? cu(_cur.apply(this, comb), len - arguments.length)
+                : _cur.call(this, comb)
+
+        } else
+            return f.apply(this, arguments)
+    }
+}
+
+// id :: a -> a
+function id(a) { return a }
+
+// | Equivalent to Haskell's void
+// abyss :: a -> IO ()
+function abyss(_) {}
+
+// _elem :: a -> [a] -> Bool
+function _elem(x, xs) {
     for (var i = 0, l = xs.length; i < l; i++) if (x === xs[i]) return true
     return false
+}
+
+// keys :: Object k e -> [k]
+function _keys(o) {
+    var _ = []
+    for (k in o) _.push(k)
+    return _
+}
+
+var keys = cu(_keys)
+
+// elems :: Object k e -> [e]
+function _elems(o) {
+    var _ = []
+    for (k in o) _.push(o[k])
+    return _
+}
+
+var elems = cu(_elems)
+
+// | Curried elem function
+// elem :: a -> [a] -> Bool
+var elem = cu(_elem)
+
+// _concat :: [[a]] -> [a]
+function _concat(xs) {
+    var tmp = []
+    for (var i = 0, l = xs.length; i < l; i++)
+        for (var j = 0, l = xs[i].length; i < l; i++)
+            tmp.push(xs[i][j])
+
+    return tmp
+}
+
+// | Curried concat function
+var concat = cu(_concat)
+
+// | Accumulate a result `z' from applying `f' to `z' and `xs[i]'.
+// foldr :: (a -> b -> b) -> b -> [a] -> b
+function _foldr(f, z, xs) {
+    for (var i = 0; i < xs.length; i++) z = f(z, xs[i])
+    return z
+}
+
+var foldr = cu(_foldr)
+
+// | foldr treating `z' as the first element in `xs' instead.
+function _foldr1(f, xs){
+    if (xs.length > 0) return foldr(f, head(xs), tail(xs))
+    else console.error("foldr1: empty list")
+}
+
+var foldr1 = cu(_foldr1)
+
+// | Function composition, basically f(g(h(x))) = co(f, g, h)(x)
+//   It is easier to read for human beans, and re-created with inspiration from
+//   Haskell.
+function co() {
+    return foldr1(function(f, g) {
+        return function(x) { return f(g(x)) }
+    }, arguments)
 }
 
 // }}}
@@ -116,7 +220,7 @@ function elem(x, xs) {
 // chatSend :: String -> IO ()
 function chatSend(m) {
     if (m.length > 0) {
-        chws.send(m)
+        chatws.send(m)
 
         toggleChat(false)
         chat.children[1].value = ""
@@ -356,7 +460,7 @@ function keydown(e) {
 
             keyMove(1)
 
-            mvws.send(players[selfKey].speedX + " " + players[selfKey].speedY)
+            movews.send(players[selfKey].speedX + " " + players[selfKey].speedY)
 
             if (! moving) {
                 ots = (new Date()).getTime() * 0.001 - fts
@@ -374,7 +478,9 @@ function keyup(e) {
 
         keyboard.splice(keyboard.indexOf(e.keyCode), 1)
 
-        mvws.send(players[selfKey].speedX + " " + players[selfKey].speedY)
+        var isMovementKey = elem(e.keyCode, concat(elems(keyConfig)))
+        if (isMovementKey)
+            movews.send(players[selfKey].speedX + " " + players[selfKey].speedY)
     }
 }
 
@@ -384,21 +490,24 @@ function connect(host, port, path, pcol, key, f) {
 
     ws.onopen = function(_) { ws.send(pcol + " " + key) }
     ws.onclose = function(_) {
+        log(_)
+
+        connectDelay = Math.min(connectDelay * 2, 10 ^ 5)
         setTimeout(function() {
             log("Reconnecting to " + pcol)
             connect(host, port, path, pcol, key, f)
-        }, 500)
+        }, connectDelay)
     }
     ws.onmessage = f
 
-    if (pcol === "move") mvws = ws
-    else if (pcol === "chat") chws = ws
-    else if (pcol === "mood") mows = ws
+    window[pcol + "ws"] = ws
+
+    log("Connected to " + pcol)
 }
 
 // disconnectAll :: IO ()
 function disconnectAll() {
-    var ss = [mvws, chws, mows]
+    var ss = [movews, chatws, moodws]
 
     for (var i = 0, len = ss.length; i < len; i++) {
         ss[i].onclose = function() {}
@@ -406,9 +515,9 @@ function disconnectAll() {
         ss[i].close()
     }
 
-    mvws = undefined
-    chws = undefined
-    mows = undefined
+    movews = undefined
+    chatws = undefined
+    moodws = undefined
 }
 
 // setupCanvas :: Canvas -> IO Context
