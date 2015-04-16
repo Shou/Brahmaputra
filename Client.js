@@ -1,4 +1,9 @@
 
+// Copyright (c) Benedict Aas, 2015
+
+var d = document
+var qs = Document.prototype.querySelector.bind(d)
+
 // {{{ Constants
 
 // host, path :: String
@@ -230,9 +235,9 @@ function chatSend(m) {
 
 // createChat :: IO ()
 function createChat() {
-    var wrap = document.createElement("div")
-    var chat = document.createElement("input")
-    var logs = document.createElement("div")
+    var wrap = d.createElement("div")
+    var chat = d.createElement("input")
+    var logs = d.createElement("div")
 
     chat.addEventListener("keypress", function(e) {
         if (e.keyCode === 13) chatSend(this.value)
@@ -240,14 +245,14 @@ function createChat() {
 
     wrap.appendChild(logs)
     wrap.appendChild(chat)
-    document.body.appendChild(wrap)
+    d.body.appendChild(wrap)
 
     return wrap
 }
 
 // talkToMeBaby :: String -> IO ()
 function talkToMeBaby(text) {
-    var aud = frames[0].document.body.querySelector("audio")
+    var aud = frames[0].document.querySelector("audio")
 
     if (! aud) aud = frames[0].document.body.appendChild(audio)
 
@@ -259,7 +264,7 @@ function talkToMeBaby(text) {
 function addMsg(m) {
     if (! chat) chat = createChat()
 
-    var msg = document.createElement("span")
+    var msg = d.createElement("span")
 
     msg.textContent = m
 
@@ -452,7 +457,7 @@ function keyMove(s, n) {
 
 // keydown :: Event -> IO ()
 function keydown(e) {
-    if (e.target === document.body && keyboard.indexOf(e.keyCode) === -1) {
+    if (e.target === d.body && keyboard.indexOf(e.keyCode) === -1) {
         if (e.keyCode === 13) toggleChat(true)
 
         else {
@@ -473,7 +478,7 @@ function keydown(e) {
 
 // keyup :: Event -> IO ()
 function keyup(e) {
-    if (e.target === document.body && keyboard.indexOf(e.keyCode) !== -1) {
+    if (e.target === d.body && keyboard.indexOf(e.keyCode) !== -1) {
         keyMove(0, e.keyCode)
 
         keyboard.splice(keyboard.indexOf(e.keyCode), 1)
@@ -541,14 +546,14 @@ function main() {
 
     window.onbeforeunload = disconnectAll
 
-    audio = document.querySelector("audio")
-    iframe = document.querySelector("iframe")
+    audio = qs("audio")
+    iframe = qs("iframe")
 
-    cv = document.querySelector("canvas")
+    cv = qs("canvas")
     cx = setupCanvas(cv)
 
-    document.body.addEventListener("keydown", keydown)
-    document.body.addEventListener("keyup", keyup)
+    d.body.addEventListener("keydown", keydown)
+    d.body.addEventListener("keyup", keyup)
 
     drawPlayer(selfKey)
     requestAnimationFrame(movePlayers)

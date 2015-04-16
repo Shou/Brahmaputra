@@ -4,7 +4,7 @@
 
 {-# LANGUAGE OverloadedStrings, BangPatterns, ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators, LiberalTypeSynonyms, GADTs, TypeFamilies #-}
-{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, TupleSections #-}
 
 -- {{{ Imports
 
@@ -318,13 +318,12 @@ initMood t c pcol key tid = do
 
 -- | Thread and websocket to move the user.
 moveThread :: Connection -> TMVar Game -> Text -> IO ()
-moveThread c t k = pt >>= \t0 -> void . flip runStateT t0 . forever $ do
+moveThread c t k = state >>= \s0 -> void . flip runStateT s0 . forever $ do
     debugLine "Awaiting coordinates"
     m <- io $ receiveData c
 
     nt <- io $ floor . (* 1000) <$> getPOSIXTime
-    (ot, oc) <- get
-    put nt
+    (ot, (Coords ox oy)) <- get
 
     -- XXX
     -- Theoretically time can be equal to nt because of the initial state,
@@ -334,9 +333,13 @@ moveThread c t k = pt >>= \t0 -> void . flip runStateT t0 . forever $ do
     -- potential bug involving the assumption that a STOP is the only
     -- requirement to assume we can add time to the player, we need more
     -- server-side state. Client-side can be abused.
+    -- XXX
+    -- Use
     let time = nt - ot
         mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
         (x, y) = over both (maybe 0 ((time *) . numNot)) mt
+
+    put (nt, Coords nx ny)
 
     io $ do
         putStrLn $ "Time " <> show time
@@ -351,6 +354,7 @@ moveThread c t k = pt >>= \t0 -> void . flip runStateT t0 . forever $ do
         relayMessage t "move" $ k <> " v " <> m
   where
     pt = floor . (* 1000) <$> getPOSIXTime
+    state = (, Coords 0 0) <$> pt
 
 -- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
