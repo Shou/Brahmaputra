@@ -1,5 +1,8 @@
 
-// Copyright (c) Benedict Aas, 2015
+// Author: Benedict Aas
+// Copyright: Benedict Aas
+// License: MIT
+// License file: LICENSE
 
 var d = document
 var qs = Document.prototype.querySelector.bind(d)

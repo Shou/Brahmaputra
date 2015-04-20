@@ -1,0 +1,31 @@
+
+Name:           Brahma
+Version:        0.1
+Synopsis:       Brahmaputra websocket server
+Author:         Shou
+Maintainer:     x@shou.io
+Copyright:      Shou
+License:        MIT
+License-File:   LICENSE
+Cabal-Version:  >= 1.2
+Build-Type:     Simple
+
+Executable brahma-server
+    GHC-Options:
+        -threaded
+    Build-Depends:
+        aeson,
+        base,
+        containers,
+        errors,
+        HDBC,
+        HDBC-sqlite3,
+        lens,
+        mtl,
+        stm,
+        text,
+        time,
+        websockets,
+        wreq
+    Main-Is:
+        Server.hs
