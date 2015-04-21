@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns, ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators, LiberalTypeSynonyms, GADTs, TypeFamilies #-}
 {-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, TupleSections #-}
+{-# LANGUAGE RankNTypes #-}
 
 -- {{{ Imports
 
@@ -13,13 +14,14 @@ import           Control.Concurrent (ThreadId, myThreadId, forkIO, killThread)
 import           Control.Concurrent.MVar
 import           Control.Concurrent.STM (atomically)
 import           Control.Concurrent.STM.TMVar
-import           Control.Error (readMay, headMay, hush)
+import           Control.Error (readDef, headMay, hush)
 import           Control.Exception (try)
 import           Control.Lens
 import           Control.Monad (forever)
 import           Control.Monad.State
 
 import           Data.Aeson
+import           Data.Bits (shift, xor)
 import           Data.List (sortBy)
 import           Data.Map (Map)
 import qualified Data.Map as M
@@ -82,23 +84,16 @@ data Game = Game { players :: Map Text Player
                  }
     deriving (Show)
 
-data Player = Player { coords :: Coords Int Int
+data Player = Player { coords :: Coords Integer
                      , wsockets :: Map Text (Connection, ThreadId)
                      , moodvar :: MVar Text
                      }
-    deriving (Show)
 
-data Coords a b where
-    Coords :: (Num a ~ Num b) => !a -> !b -> Coords a b
+instance Show Player where
+    show (Player c w m) = "Player " ++ show c ++ " WS ("
+                       ++ show (length $ M.keys w) ++ ") MVar _"
 
-instance (Show a, Show b) => Show (Coords a b) where
-    show (Coords x y) = show x ++ " " ++ show y
-
-instance (Num a ~ Num a') => Field1 (Coords a b) (Coords a' b) a a' where
-    _1 k (Coords x y) = (\x' -> Coords x' y) <$> k x
-
-instance (Num b ~ Num b') => Field2 (Coords a b) (Coords a b') b b' where
-    _2 k (Coords x y) = (\y' -> Coords x y') <$> k y
+type Coords a = (Num a ~ Num b) => (a, b)
 
 data Chat = Chat { history :: [ChatMsg] }
 
@@ -142,7 +137,7 @@ instance Show (MVar a) where
 -- {{{ Data utils
 
 defPlayer :: MVar Text -> Player
-defPlayer = Player (Coords 0 0) mempty
+defPlayer = Player (0, 0) mempty
 
 modGamePlayer :: Player ~> Player -> Text -> Game -> Game
 modGamePlayer f user g =
@@ -162,11 +157,8 @@ modGame tg f = atomically $ do
 getGame :: TMVar Game -> IO Game
 getGame tg = atomically $ readTMVar tg
 
-coordsTuple :: Coords a b -> (a, b)
-coordsTuple (Coords x y) = (x, y)
-
 insHistory :: ChatMsg -> Game -> Game
-insHistory cm g = g { chat = c { history = take 100 (history c) <> [cm] } }
+insHistory cm g = g { chat = c { history = take 99 (history c) <> [cm] } }
   where
     c = chat g
 
@@ -303,12 +295,16 @@ initMove t c pcol key tid = do
     addSocket t key pcol c tid
 
     cs <- map (over _2 coords) . M.toList . players <$> getGame t
-    forM_ cs $ \(ke, co) ->
-        sendTextData c . ((ke <> " c ") <>) . T.pack . show $ co
+    forM_ cs $ \(ke, (x, y)) ->
+        sendTextData c . ((ke <> " c ") <>) . T.pack $ show x ++ " " ++ show y
 
     moveThread c t key
 
 initChat t c pcol key tid = do
+    hi <- history . chat <$> getGame t
+    let showMsg (us, ti, mg) = us <> " " <> T.pack (show ti) <> " " <> mg
+    forM_ hi $ sendTextData c . ("h " <>) . showMsg
+
     addSocket t key pcol c tid
     chatThread c t key
 
@@ -323,7 +319,7 @@ moveThread c t k = state >>= \s0 -> void . flip runStateT s0 . forever $ do
     m <- io $ receiveData c
 
     nt <- io $ floor . (* 1000) <$> getPOSIXTime
-    (ot, (Coords ox oy)) <- get
+    (ot, oc) <- get
 
     -- XXX
     -- Theoretically time can be equal to nt because of the initial state,
@@ -334,27 +330,31 @@ moveThread c t k = state >>= \s0 -> void . flip runStateT s0 . forever $ do
     -- requirement to assume we can add time to the player, we need more
     -- server-side state. Client-side can be abused.
     -- XXX
-    -- Use
-    let time = nt - ot
-        mt = over both (readMay . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
-        (x, y) = over both (maybe 0 ((time *) . numNot)) mt
+    -- technically `binaryZip' isn't type-safe but who cares lol!
+    let binaryZip f t0 t1 = over both (foldr1 f) $ unzip [t0, t1]
+        xorShift a b = xor a b * shift a (fromIntegral b)
+        time :: Integer
+        time = nt - ot
+        !nc@(!nx, !ny) = over both (readDef 0 . T.unpack) $ T.drop 1 <$> T.break (== ' ') m
+        (x, y) = binaryZip xorShift oc nc
+        (tx, ty) = over both (time *) (x, y)
 
-    put (nt, Coords nx ny)
+    put (nt, nc)
 
     io $ do
         putStrLn $ "Time " <> show time
-        putStrLn $ show (x, y)
+        putStrLn $ show (tx, ty)
 
         modGame t $ flip modGamePlayer k $ \p ->
-            let (Coords x' y') = coords p
-            in p { coords = Coords (x + x') (y + y') }
+            let (tx', ty') = coords p
+            in p { coords = ((tx + tx'), (ty + ty')) }
 
         getGamePlayer k <$> getGame t >>= debugLine . show
 
         relayMessage t "move" $ k <> " v " <> m
   where
     pt = floor . (* 1000) <$> getPOSIXTime
-    state = (, Coords 0 0) <$> pt
+    state = (, (0, 0) :: Coords Integer) <$> pt
 
 -- | Thread and websocket for the user chat.
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
@@ -408,7 +408,7 @@ chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine $ "The message is: " <> fst (head sortedMoods)
 
     debugLine $ "Relaying message"
-    relayMessage t "chat" $ k <> " " <> T.pack (show ts) <> " " <> m
+    relayMessage t "chat" $ "c " <> k <> " " <> T.pack (show ts) <> " " <> m
 
     modGame t $ insHistory (k, ts, m)
 

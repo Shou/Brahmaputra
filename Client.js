@@ -269,10 +269,17 @@ function addMsg(m) {
 
     var msg = d.createElement("span")
 
-    msg.textContent = m
+    var mgps = m.split(' ')
 
-    var mcon = m.split(' ').slice(2).join(' ').slice(0, 100)
-    talkToMeBaby(mcon)
+    var mtyp = mgps[0]
+    var mnam = mgps[1]
+    var mdat = new Date(parseInt(mgps[2]) * 1000)
+    var mmsg = mgps.slice(3).join(' ')
+
+    msg.textContent = mnam + ": " + mmsg + ""
+    msg.title = mdat.toLocaleString()
+
+    if (mtyp == 'c') talkToMeBaby(mmsg)
 
     chat.children[0].appendChild(msg)
 }
@@ -346,13 +353,17 @@ function movePlayers(ts) {
     cx.clearRect(0, 0, cv.width, cv.height)
 
     ts = ts * 0.001
+    if (ots === null) ots = ts - 0.01
     var speed = (ts - ots) * maxSpeed
 
     for (key in players) moving = movePlayer(key, speed) || moving
 
     ots = ts
 
-    if (! moving) cancelAnimationFrame(next)
+    if (! moving) {
+        ots = null
+        cancelAnimationFrame(next)
+    }
 }
 
 // movePlayer :: String -> IO Bool
@@ -471,7 +482,6 @@ function keydown(e) {
             movews.send(players[selfKey].speedX + " " + players[selfKey].speedY)
 
             if (! moving) {
-                ots = (new Date()).getTime() * 0.001 - fts
                 requestAnimationFrame(movePlayers)
             }
         }
@@ -500,7 +510,7 @@ function connect(host, port, path, pcol, key, f) {
     ws.onclose = function(_) {
         log(_)
 
-        connectDelay = Math.min(connectDelay * 2, 10 ^ 5)
+        connectDelay = Math.min(connectDelay * 2, 64000)
         setTimeout(function() {
             log("Reconnecting to " + pcol)
             connect(host, port, path, pcol, key, f)
