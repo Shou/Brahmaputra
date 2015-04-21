@@ -504,7 +504,7 @@ function keyup(e) {
 
 // connect :: String -> Int -> String -> String -> IO WebSocket
 function connect(host, port, path, pcol, key, f) {
-    var ws = new WebSocket("ws://" + host + ':' + port + path)
+    var ws = new WebSocket("//" + host + ':' + port + path)
 
     ws.onopen = function(_) { ws.send(pcol + " " + key) }
     ws.onclose = function(_) {
