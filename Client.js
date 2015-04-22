@@ -244,6 +244,7 @@ function createChat() {
 
     chat.addEventListener("keypress", function(e) {
         if (e.keyCode === 13) chatSend(this.value)
+        if (this.value.length > 256) this.value = this.value.slice(0, 256)
     })
 
     wrap.appendChild(logs)
@@ -504,7 +505,8 @@ function keyup(e) {
 
 // connect :: String -> Int -> String -> String -> IO WebSocket
 function connect(host, port, path, pcol, key, f) {
-    var ws = new WebSocket("//" + host + ':' + port + path)
+    var proto = location.protocol === "http:" ? "ws:" : "wss:"
+    var ws = new WebSocket(proto + "//" + host + ':' + port + path)
 
     ws.onopen = function(_) { ws.send(pcol + " " + key) }
     ws.onclose = function(_) {

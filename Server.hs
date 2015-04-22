@@ -360,7 +360,7 @@ moveThread c t k = state >>= \s0 -> void . flip runStateT s0 . forever $ do
 chatThread :: Connection -> TMVar Game -> Text -> IO ()
 chatThread c t k = playerMoodvar t k >>= \mv -> forever $ do
     debugLine "Awaiting chat message"
-    (m :: Text) <- receiveData c
+    m <- T.take 256 <$> receiveData c
 
     (Game _ _ db) <- atomically $ readTMVar t
 
